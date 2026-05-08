@@ -1,4 +1,5 @@
 const express = require("express");
+const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const { Server } = require("socket.io");
@@ -32,8 +33,194 @@ const NEEDLE_DASH_CHARGE_MS = 800;
 const NEEDLE_DASH_DURATION_MS = 260;
 const NEEDLE_DASH_COOLDOWN_MS = 2600;
 
+const STATS_FILE = path.join(__dirname, "swarmcore_stats.json");
+const STATS_TMP_FILE = `${STATS_FILE}.tmp`;
+const MAX_RECENT_EVENTS = 100;
+const STATS_FLUSH_INTERVAL_MS = 30000;
+
+function createEmptyStats() {
+  return {
+    totalSocketConnections: 0,
+    totalGameStarts: 0,
+    totalDisconnects: 0,
+    totalDeaths: 0,
+    totalKills: 0,
+    botDeaths: 0,
+    botKills: 0,
+    activePlayers: 0,
+    peakActivePlayers: 0,
+    sessionsStarted: 0,
+    completedSessions: 0,
+    averageSessionSeconds: 0,
+    totalSessionSeconds: 0,
+    playerKilledBot: 0,
+    botKilledPlayer: 0,
+    playerKilledPlayer: 0,
+    botKilledBot: 0,
+    recentEvents: []
+  };
+}
+
+const analytics = createEmptyStats();
+const socketSessions = new Map();
+let statsDirty = false;
+let pendingFlushTimer = null;
+let statsFlushInProgress = false;
+
+function normalizeLoadedStats(raw = {}) {
+  const base = createEmptyStats();
+  const normalized = {
+    ...base,
+    ...raw
+  };
+
+  normalized.totalSocketConnections = Number.isFinite(normalized.totalSocketConnections) ? normalized.totalSocketConnections : 0;
+  normalized.totalGameStarts = Number.isFinite(normalized.totalGameStarts) ? normalized.totalGameStarts : 0;
+  normalized.totalDisconnects = Number.isFinite(normalized.totalDisconnects) ? normalized.totalDisconnects : 0;
+  normalized.totalDeaths = Number.isFinite(normalized.totalDeaths) ? normalized.totalDeaths : 0;
+  normalized.totalKills = Number.isFinite(normalized.totalKills) ? normalized.totalKills : 0;
+  normalized.botDeaths = Number.isFinite(normalized.botDeaths) ? normalized.botDeaths : 0;
+  normalized.botKills = Number.isFinite(normalized.botKills) ? normalized.botKills : 0;
+  normalized.activePlayers = Number.isFinite(normalized.activePlayers) ? normalized.activePlayers : 0;
+  normalized.peakActivePlayers = Number.isFinite(normalized.peakActivePlayers) ? normalized.peakActivePlayers : 0;
+  normalized.sessionsStarted = Number.isFinite(normalized.sessionsStarted) ? normalized.sessionsStarted : 0;
+  normalized.completedSessions = Number.isFinite(normalized.completedSessions) ? normalized.completedSessions : 0;
+  normalized.totalSessionSeconds = Number.isFinite(normalized.totalSessionSeconds) ? normalized.totalSessionSeconds : 0;
+  normalized.averageSessionSeconds = Number.isFinite(normalized.averageSessionSeconds) ? normalized.averageSessionSeconds : 0;
+  normalized.playerKilledBot = Number.isFinite(normalized.playerKilledBot) ? normalized.playerKilledBot : 0;
+  normalized.botKilledPlayer = Number.isFinite(normalized.botKilledPlayer) ? normalized.botKilledPlayer : 0;
+  normalized.playerKilledPlayer = Number.isFinite(normalized.playerKilledPlayer) ? normalized.playerKilledPlayer : 0;
+  normalized.botKilledBot = Number.isFinite(normalized.botKilledBot) ? normalized.botKilledBot : 0;
+  normalized.recentEvents = Array.isArray(normalized.recentEvents)
+    ? normalized.recentEvents.slice(-MAX_RECENT_EVENTS)
+    : [];
+
+  return normalized;
+}
+
+function loadStatsFromDisk() {
+  try {
+    if (!fs.existsSync(STATS_FILE)) return;
+    const raw = fs.readFileSync(STATS_FILE, "utf8");
+    const parsed = normalizeLoadedStats(JSON.parse(raw));
+    Object.assign(analytics, parsed);
+  } catch (error) {
+    console.error("Analytics startup warning: unable to load swarmcore_stats.json", error.message);
+  }
+}
+
+function recalculateAverageSessionSeconds() {
+  analytics.averageSessionSeconds = analytics.completedSessions > 0
+    ? Number((analytics.totalSessionSeconds / analytics.completedSessions).toFixed(2))
+    : 0;
+}
+
+function markStatsDirty() {
+  statsDirty = true;
+}
+
+function recalculateActivePlayers() {
+  let active = 0;
+  for (const session of socketSessions.values()) {
+    if (session.startedAt) active += 1;
+  }
+  analytics.activePlayers = active;
+  analytics.peakActivePlayers = Math.max(analytics.peakActivePlayers, active);
+  markStatsDirty();
+}
+
+function addRecentEvent(type, details = {}) {
+  analytics.recentEvents.push({
+    at: new Date().toISOString(),
+    type,
+    details
+  });
+  if (analytics.recentEvents.length > MAX_RECENT_EVENTS) {
+    analytics.recentEvents.splice(0, analytics.recentEvents.length - MAX_RECENT_EVENTS);
+  }
+  markStatsDirty();
+}
+
+async function flushStatsToDisk() {
+  if (statsFlushInProgress || !statsDirty) return;
+  statsFlushInProgress = true;
+  const payload = {
+    ...analytics,
+    recentEvents: analytics.recentEvents.slice(-MAX_RECENT_EVENTS)
+  };
+  try {
+    const json = `${JSON.stringify(payload, null, 2)}\n`;
+    await fs.promises.writeFile(STATS_TMP_FILE, json, "utf8");
+    await fs.promises.rename(STATS_TMP_FILE, STATS_FILE);
+    statsDirty = false;
+  } catch (error) {
+    console.error("Analytics warning: failed to flush swarmcore_stats.json", error.message);
+  } finally {
+    statsFlushInProgress = false;
+  }
+}
+
+function scheduleStatsFlushSoon(delayMs = 1200) {
+  markStatsDirty();
+  if (pendingFlushTimer) return;
+  pendingFlushTimer = setTimeout(async () => {
+    pendingFlushTimer = null;
+    await flushStatsToDisk();
+  }, delayMs);
+}
+
+function analyticsSnapshot() {
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    activePlayers: analytics.activePlayers,
+    peakActivePlayers: analytics.peakActivePlayers,
+    totalSocketConnections: analytics.totalSocketConnections,
+    totalGameStarts: analytics.totalGameStarts,
+    totalDisconnects: analytics.totalDisconnects,
+    totalDeaths: analytics.totalDeaths,
+    totalKills: analytics.totalKills,
+    botDeaths: analytics.botDeaths,
+    botKills: analytics.botKills,
+    sessionsStarted: analytics.sessionsStarted,
+    completedSessions: analytics.completedSessions,
+    averageSessionSeconds: analytics.averageSessionSeconds,
+    playerKilledBot: analytics.playerKilledBot,
+    botKilledPlayer: analytics.botKilledPlayer,
+    playerKilledPlayer: analytics.playerKilledPlayer,
+    botKilledBot: analytics.botKilledBot,
+    recentEvents: analytics.recentEvents.slice(-MAX_RECENT_EVENTS)
+  };
+}
+
+loadStatsFromDisk();
+recalculateAverageSessionSeconds();
+
+setInterval(() => {
+  flushStatsToDisk();
+}, STATS_FLUSH_INTERVAL_MS);
+
+// NOTE: local JSON persistence can be lost on Render restart/redeploy; move to durable storage later.
+
 app.get("/health", (req, res) => {
   res.status(200).send("OK");
+});
+
+app.get("/admin/stats", (req, res) => {
+  const token = process.env.STATS_TOKEN;
+  if (!token) {
+    return res.status(403).json({
+      ok: false,
+      message: "STATS_TOKEN is not configured on this server."
+    });
+  }
+  if (req.query.token !== token) {
+    return res.status(403).json({
+      ok: false,
+      message: "Invalid token."
+    });
+  }
+  return res.json(analyticsSnapshot());
 });
 
 app.use(express.static(path.join(__dirname, "public"), {
@@ -99,6 +286,10 @@ function safeName(value) {
 function randomColor() {
   const colors = Object.values(SKINS).map((skin) => skin.color);
   return colors[Math.floor(Math.random() * colors.length)];
+}
+
+function isBotId(id) {
+  return typeof id === "string" && id.startsWith("bot");
 }
 
 function normalizeSkin(skinId) {
@@ -415,6 +606,20 @@ function stripDrones(player, amount, options = {}) {
 
 function killPlayer(player, killer) {
   if (!player.alive) return;
+  const isVictimBot = isBotId(player.id);
+  const isKillerBot = Boolean(killer && isBotId(killer.id));
+
+  if (isVictimBot) analytics.botDeaths += 1;
+  else analytics.totalDeaths += 1;
+  addRecentEvent("death", {
+    playerId: player.id,
+    killerId: killer && killer.id ? killer.id : null,
+    bountyRank: player.bountyRank || 0,
+    isVictimBot,
+    isKillerBot
+  });
+  scheduleStatsFlushSoon();
+
   const remainingDrones = player.drones;
   const killedTier = titanTier(player);
   if (remainingDrones > 0) {
@@ -460,9 +665,25 @@ function killPlayer(player, killer) {
   }
 
   if (killer && killer.id !== player.id && killer.alive) {
+    if (isKillerBot) analytics.botKills += 1;
+    else analytics.totalKills += 1;
+
+    if (!isKillerBot && isVictimBot) analytics.playerKilledBot += 1;
+    else if (isKillerBot && !isVictimBot) analytics.botKilledPlayer += 1;
+    else if (!isKillerBot && !isVictimBot) analytics.playerKilledPlayer += 1;
+    else analytics.botKilledBot += 1;
+
+    addRecentEvent("kill", {
+      killerId: killer.id,
+      victimId: player.id,
+      victimBountyRank: player.bountyRank || 0,
+      isVictimBot,
+      isKillerBot
+    });
     killer.score += 25 + player.bountyRank * 50;
     repairDrones(killer, 10);
     addEnergy(killer, 8 + player.bountyRank * 6);
+    scheduleStatsFlushSoon();
   }
 }
 
@@ -983,6 +1204,14 @@ function broadcastState(nowSeconds) {
 }
 
 io.on("connection", (socket) => {
+  analytics.totalSocketConnections += 1;
+  socketSessions.set(socket.id, {
+    connectedAt: Date.now(),
+    startedAt: null
+  });
+  addRecentEvent("socket_connected", { socketId: socket.id });
+  scheduleStatsFlushSoon();
+
   const realPlayers = [...players.values()].filter((player) => !player.isBot).length;
   if (realPlayers >= MAX_REAL_PLAYERS) {
     socket.emit("serverFull", { maxPlayers: MAX_REAL_PLAYERS });
@@ -1004,6 +1233,20 @@ io.on("connection", (socket) => {
   socket.on("hello", (payload = {}) => {
     const existing = players.get(socket.id);
     if (!existing) return;
+
+    analytics.totalGameStarts += 1;
+    const session = socketSessions.get(socket.id);
+    if (session && !session.startedAt) {
+      session.startedAt = Date.now();
+      analytics.sessionsStarted += 1;
+      recalculateActivePlayers();
+    }
+    addRecentEvent("game_start", {
+      socketId: socket.id,
+      playerName: safeName(payload.name || existing.name)
+    });
+    scheduleStatsFlushSoon();
+
     if (existing.alive) {
       existing.name = safeName(payload.name || existing.name);
       applySkin(existing, payload.skin || existing.skin);
@@ -1039,6 +1282,22 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
+    analytics.totalDisconnects += 1;
+    const session = socketSessions.get(socket.id);
+    if (session && session.startedAt) {
+      const durationSeconds = Math.max(0, (Date.now() - session.startedAt) / 1000);
+      analytics.completedSessions += 1;
+      analytics.totalSessionSeconds += durationSeconds;
+      recalculateAverageSessionSeconds();
+    }
+    socketSessions.delete(socket.id);
+    recalculateActivePlayers();
+    addRecentEvent("socket_disconnected", {
+      socketId: socket.id,
+      hadStartedSession: Boolean(session && session.startedAt)
+    });
+    scheduleStatsFlushSoon();
+
     players.delete(socket.id);
   });
 });
