@@ -193,6 +193,949 @@ function analyticsSnapshot() {
   };
 }
 
+function getStatsAccessError(req) {
+  const token = process.env.STATS_TOKEN;
+  if (!token) {
+    return {
+      status: 403,
+      code: "stats_token_missing",
+      message: "STATS_TOKEN is not configured on this server."
+    };
+  }
+
+  const providedToken = typeof req.query.token === "string" ? req.query.token : "";
+  if (!providedToken) {
+    return {
+      status: 403,
+      code: "stats_token_required",
+      message: "Missing token. Open this page with ?token=YOUR_SECRET."
+    };
+  }
+
+  if (providedToken !== token) {
+    return {
+      status: 403,
+      code: "stats_token_invalid",
+      message: "Invalid token."
+    };
+  }
+
+  return null;
+}
+
+function renderStatsDashboardPage() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SwarmCore Analytics</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #05070d;
+      --panel: rgba(12, 16, 27, 0.84);
+      --panel-strong: rgba(16, 21, 36, 0.94);
+      --line: rgba(255, 255, 255, 0.09);
+      --text: #eef6ff;
+      --muted: rgba(238, 246, 255, 0.64);
+      --cyan: #59f3ff;
+      --amber: #ffe66d;
+      --rose: #ff4f70;
+      --mint: #54ffc6;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at 15% 20%, rgba(89, 243, 255, 0.16), transparent 24rem),
+        radial-gradient(circle at 85% 18%, rgba(255, 79, 112, 0.14), transparent 22rem),
+        radial-gradient(circle at 50% 120%, rgba(255, 230, 109, 0.12), transparent 30rem),
+        linear-gradient(180deg, #05070d 0%, #080b14 48%, #03050a 100%);
+      color: var(--text);
+      font-family: "Segoe UI Variable", "Bahnschrift", "Trebuchet MS", system-ui, sans-serif;
+    }
+
+    body {
+      padding: 24px;
+    }
+
+    .shell {
+      max-width: 1440px;
+      margin: 0 auto;
+      display: grid;
+      gap: 18px;
+    }
+
+    .hero,
+    .panel,
+    .event-item,
+    .empty,
+    .locked {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      border-radius: 22px;
+      padding: 26px;
+      background:
+        linear-gradient(145deg, rgba(8, 12, 22, 0.96), rgba(16, 21, 36, 0.88)),
+        radial-gradient(circle at top right, rgba(89, 243, 255, 0.2), transparent 18rem);
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: auto -80px -100px auto;
+      width: 240px;
+      height: 240px;
+      background: radial-gradient(circle, rgba(89, 243, 255, 0.2), transparent 70%);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      color: var(--cyan);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.24em;
+      text-transform: uppercase;
+    }
+
+    .hero-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .hero h1 {
+      margin: 8px 0 8px;
+      font-size: clamp(32px, 5vw, 58px);
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+      text-transform: uppercase;
+    }
+
+    .hero-sub {
+      color: var(--muted);
+      font-size: 15px;
+      max-width: 760px;
+    }
+
+    .hero-tools {
+      display: grid;
+      gap: 10px;
+      justify-items: end;
+      min-width: 240px;
+    }
+
+    .timestamp {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+    }
+
+    .button-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    button,
+    .chip {
+      appearance: none;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 10px 15px;
+      font: inherit;
+      font-weight: 800;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      transition: 140ms ease;
+    }
+
+    button:hover,
+    .chip.active {
+      border-color: rgba(89, 243, 255, 0.52);
+      background: rgba(89, 243, 255, 0.12);
+      box-shadow: 0 0 0 1px rgba(89, 243, 255, 0.08) inset;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+
+    .statusbar {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      padding: 8px 12px;
+      background: rgba(84, 255, 198, 0.1);
+      border: 1px solid rgba(84, 255, 198, 0.18);
+      color: #d9fff3;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .status-pill.warn {
+      background: rgba(255, 230, 109, 0.1);
+      border-color: rgba(255, 230, 109, 0.18);
+      color: #fff8cf;
+    }
+
+    .status-pill.danger {
+      background: rgba(255, 79, 112, 0.1);
+      border-color: rgba(255, 79, 112, 0.2);
+      color: #ffd3db;
+    }
+
+    .status-pill::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 14px currentColor;
+    }
+
+    .error-banner {
+      display: none;
+      border-radius: 16px;
+      padding: 14px 16px;
+      background: rgba(255, 79, 112, 0.1);
+      border: 1px solid rgba(255, 79, 112, 0.22);
+      color: #ffd8df;
+      font-weight: 700;
+    }
+
+    .error-banner.visible {
+      display: block;
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .stats-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .combat-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .insight-grid {
+      grid-template-columns: 1.2fr 0.8fr;
+      align-items: start;
+    }
+
+    .panel {
+      border-radius: 20px;
+      padding: 18px;
+      background: linear-gradient(180deg, rgba(13, 18, 31, 0.95), rgba(10, 14, 24, 0.88));
+    }
+
+    .panel-title {
+      margin: 0 0 14px;
+      font-size: 13px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      font-weight: 900;
+    }
+
+    .panel-subtitle {
+      margin: -4px 0 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .stat-card {
+      position: relative;
+      overflow: hidden;
+      min-height: 136px;
+    }
+
+    .stat-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto auto 0;
+      width: 100%;
+      height: 3px;
+      background: linear-gradient(90deg, var(--cyan), rgba(255, 230, 109, 0.6));
+      opacity: 0.8;
+    }
+
+    .stat-label {
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .stat-value {
+      margin-top: 18px;
+      font-size: clamp(32px, 4vw, 48px);
+      font-weight: 900;
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+    }
+
+    .stat-note {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .combat-note {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .session-metrics {
+      display: grid;
+      gap: 12px;
+    }
+
+    .metric-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .metric-row:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .metric-value {
+      font-weight: 900;
+    }
+
+    .insight-message {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+    }
+
+    .message-card {
+      border-radius: 18px;
+      padding: 18px;
+      background: linear-gradient(180deg, rgba(89, 243, 255, 0.09), rgba(255, 255, 255, 0.03));
+      border: 1px solid rgba(89, 243, 255, 0.14);
+    }
+
+    .message-title {
+      color: var(--cyan);
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .message-body {
+      margin-top: 10px;
+      font-size: 24px;
+      font-weight: 900;
+      line-height: 1.1;
+    }
+
+    .event-tools {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+      align-items: center;
+    }
+
+    .filter-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .events {
+      display: grid;
+      gap: 10px;
+      max-height: 720px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    .event-item,
+    .empty,
+    .locked {
+      border-radius: 16px;
+      padding: 14px 16px;
+    }
+
+    .event-item {
+      display: grid;
+      gap: 8px;
+      background: linear-gradient(180deg, rgba(14, 19, 32, 0.96), rgba(10, 14, 24, 0.9));
+    }
+
+    .event-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      font-weight: 900;
+    }
+
+    .event-summary {
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--text);
+    }
+
+    .event-tags {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .tag {
+      border-radius: 999px;
+      padding: 5px 9px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .tag.player {
+      color: #d6ffff;
+      background: rgba(89, 243, 255, 0.1);
+    }
+
+    .tag.bot {
+      color: #fff6ca;
+      background: rgba(255, 230, 109, 0.1);
+    }
+
+    .tag.warn {
+      color: #ffd1da;
+      background: rgba(255, 79, 112, 0.1);
+    }
+
+    .empty,
+    .locked {
+      text-align: center;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    @media (max-width: 1080px) {
+      .stats-grid,
+      .combat-grid,
+      .insight-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 760px) {
+      body {
+        padding: 14px;
+      }
+
+      .hero,
+      .panel,
+      .event-item,
+      .empty,
+      .locked {
+        border-radius: 18px;
+      }
+
+      .hero {
+        padding: 18px;
+      }
+
+      .hero-row,
+      .event-tools {
+        display: grid;
+      }
+
+      .hero-tools {
+        justify-items: start;
+      }
+
+      .button-row {
+        justify-content: flex-start;
+      }
+
+      .stats-grid,
+      .combat-grid,
+      .insight-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .stat-card {
+        min-height: 112px;
+      }
+
+      .events {
+        max-height: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <div class="hero-row">
+        <div>
+          <div class="eyebrow">Early Public Testing</div>
+          <h1>SwarmCore Analytics</h1>
+          <div class="hero-sub">Live admin view for early multiplayer playtesting. Real player metrics are separated from bot combat so you can see who actually starts, stays, dies, and fights.</div>
+        </div>
+        <div class="hero-tools">
+          <div class="timestamp">Last updated: <strong id="lastUpdated">Waiting for data…</strong></div>
+          <div class="button-row">
+            <button id="refreshButton" type="button">Refresh</button>
+          </div>
+        </div>
+      </div>
+      <div class="statusbar">
+        <div class="status-pill" id="headlineStatus">Waiting for analytics…</div>
+      </div>
+    </section>
+
+    <div id="errorBanner" class="error-banner"></div>
+
+    <section class="grid stats-grid" id="mainStats"></section>
+
+    <section class="panel">
+      <h2 class="panel-title">Combat Breakdown</h2>
+      <div class="panel-subtitle">Bot combat is tracked separately so real player testing does not get polluted.</div>
+      <div class="grid combat-grid" id="combatStats"></div>
+      <div class="combat-note">Player-facing combat health is mostly visible through player-only cards above. The bot cards below help you judge how noisy the sandbox currently is.</div>
+    </section>
+
+    <section class="grid insight-grid">
+      <div class="panel">
+        <h2 class="panel-title">Session Quality</h2>
+        <div class="session-metrics" id="sessionMetrics"></div>
+      </div>
+      <div class="panel insight-message">
+        <div class="message-card">
+          <div class="message-title">Testing Signal</div>
+          <div class="message-body" id="qualityMessage">Waiting for data…</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="event-tools">
+        <div>
+          <h2 class="panel-title" style="margin-bottom: 6px;">Recent Events</h2>
+          <div class="panel-subtitle" style="margin: 0;">Readable event stream with quick filters for player activity, bot combat, and connection flow.</div>
+        </div>
+        <div class="filter-row" id="eventFilters">
+          <button class="chip active" data-filter="all" type="button">All</button>
+          <button class="chip" data-filter="players" type="button">Players Only</button>
+          <button class="chip" data-filter="bot" type="button">Bot Combat</button>
+          <button class="chip" data-filter="connections" type="button">Connections</button>
+        </div>
+      </div>
+      <div class="events" id="eventsList"></div>
+    </section>
+  </div>
+
+  <script>
+    (() => {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get('token');
+      const lastUpdatedEl = document.getElementById('lastUpdated');
+      const errorBanner = document.getElementById('errorBanner');
+      const headlineStatus = document.getElementById('headlineStatus');
+      const mainStats = document.getElementById('mainStats');
+      const combatStats = document.getElementById('combatStats');
+      const sessionMetrics = document.getElementById('sessionMetrics');
+      const qualityMessage = document.getElementById('qualityMessage');
+      const eventsList = document.getElementById('eventsList');
+      const refreshButton = document.getElementById('refreshButton');
+      const eventFilters = document.getElementById('eventFilters');
+
+      let statsCache = null;
+      let activeFilter = 'all';
+      let loading = false;
+
+      function formatNumber(value) {
+        return new Intl.NumberFormat().format(Number.isFinite(value) ? value : 0);
+      }
+
+      function formatPercent(value) {
+        return Number.isFinite(value) ? value.toFixed(value >= 10 ? 0 : 1) + '%' : '0%';
+      }
+
+      function formatSeconds(value) {
+        const seconds = Number.isFinite(value) ? value : 0;
+        if (seconds >= 3600) return (seconds / 3600).toFixed(1) + 'h';
+        if (seconds >= 60) return (seconds / 60).toFixed(1) + 'm';
+        return seconds.toFixed(1) + 's';
+      }
+
+      function setError(message) {
+        if (!message) {
+          errorBanner.classList.remove('visible');
+          errorBanner.textContent = '';
+          return;
+        }
+        errorBanner.textContent = message;
+        errorBanner.classList.add('visible');
+      }
+
+      function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, (char) => ({
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#39;'
+        })[char]);
+      }
+
+      function statusTone(message) {
+        if (/no real players/i.test(message)) return 'warn';
+        if (/dying fast/i.test(message)) return 'danger';
+        return '';
+      }
+
+      function computeQualityMessage(stats) {
+        if (!stats || !stats.totalGameStarts) return 'No real players yet';
+        if (stats.averageSessionSeconds >= 150 && stats.completedSessions >= 3) return 'Players are sticking around';
+        if (stats.totalDeaths > Math.max(3, stats.totalGameStarts * 1.5)) return 'People are dying fast';
+        if (stats.activePlayers > 0 || stats.sessionsStarted > 0) return 'Players are testing';
+        return 'Players are testing';
+      }
+
+      function renderCards(target, cards) {
+        target.innerHTML = cards.map((card) => {
+          return '<article class="panel stat-card">'
+            + '<div class="stat-label">' + escapeHtml(card.label) + '</div>'
+            + '<div class="stat-value">' + escapeHtml(card.value) + '</div>'
+            + '<div class="stat-note">' + escapeHtml(card.note || '') + '</div>'
+            + '</article>';
+        }).join('');
+      }
+
+      function summarizeEvent(event) {
+        const type = event && event.type ? event.type : 'unknown';
+        const details = event && event.details ? event.details : {};
+
+        if (type === 'socket_connected') return 'Socket connected';
+        if (type === 'socket_disconnected') {
+          return details.hadStartedSession ? 'Player disconnected after starting a session' : 'Visitor disconnected before starting';
+        }
+        if (type === 'game_start') {
+          return details.playerName ? 'Player started a session as ' + details.playerName : 'Player started a session';
+        }
+        if (type === 'kill') {
+          if (details.isKillerBot && details.isVictimBot) return 'Bot killed bot';
+          if (details.isKillerBot && !details.isVictimBot) return 'Bot killed player';
+          if (!details.isKillerBot && details.isVictimBot) return 'Player killed bot';
+          return 'Player killed player';
+        }
+        if (type === 'death') {
+          if (details.isVictimBot && details.isKillerBot) return 'Bot died to bot combat';
+          if (details.isVictimBot && !details.isKillerBot) return 'Bot died to player combat';
+          if (!details.isVictimBot && details.isKillerBot) return 'Player died to bot combat';
+          return 'Player died in player combat';
+        }
+
+        return type.replace(/_/g, ' ');
+      }
+
+      function eventTags(event) {
+        const tags = [];
+        const details = event && event.details ? event.details : {};
+
+        if (event.type === 'socket_connected' || event.type === 'socket_disconnected') {
+          tags.push({ tone: 'player', text: 'connection' });
+        }
+        if (event.type === 'game_start') {
+          tags.push({ tone: 'player', text: 'session' });
+        }
+        if (details.isKillerBot === false || details.isVictimBot === false) {
+          tags.push({ tone: 'player', text: 'player' });
+        }
+        if (details.isKillerBot === true || details.isVictimBot === true) {
+          tags.push({ tone: 'bot', text: 'bot' });
+        }
+        if (event.type === 'death' || event.type === 'kill') {
+          tags.push({ tone: 'warn', text: event.type });
+        }
+
+        return tags;
+      }
+
+      function matchesFilter(event, filterName) {
+        const details = event && event.details ? event.details : {};
+
+        if (filterName === 'all') return true;
+        if (filterName === 'connections') {
+          return event.type === 'socket_connected' || event.type === 'socket_disconnected';
+        }
+        if (filterName === 'bot') {
+          return details.isVictimBot === true || details.isKillerBot === true;
+        }
+        if (filterName === 'players') {
+          return event.type === 'socket_connected'
+            || event.type === 'socket_disconnected'
+            || details.hadStartedSession === true
+            || (details.isVictimBot === false && details.isKillerBot === false);
+        }
+        return true;
+      }
+
+      function renderEvents(stats) {
+        const events = Array.isArray(stats && stats.recentEvents) ? stats.recentEvents.slice().reverse() : [];
+        const filtered = events.filter((event) => matchesFilter(event, activeFilter));
+
+        if (!filtered.length) {
+          eventsList.innerHTML = '<div class="empty">No events match this filter yet.</div>';
+          return;
+        }
+
+        eventsList.innerHTML = filtered.map((event) => {
+          const time = event && event.at ? new Date(event.at) : null;
+          const label = time && !Number.isNaN(time.getTime())
+            ? time.toLocaleString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', month: 'short', day: 'numeric' })
+            : 'Unknown time';
+          const tags = eventTags(event).map((tag) => '<span class="tag ' + escapeHtml(tag.tone) + '">' + escapeHtml(tag.text) + '</span>').join('');
+          return '<article class="event-item">'
+            + '<div class="event-meta"><span>' + escapeHtml(event.type || 'event') + '</span><span>' + escapeHtml(label) + '</span></div>'
+            + '<div class="event-summary">' + escapeHtml(summarizeEvent(event)) + '</div>'
+            + '<div class="event-tags">' + tags + '</div>'
+            + '</article>';
+        }).join('');
+      }
+
+      function renderSessionQuality(stats) {
+        const socketConnections = Math.max(0, stats.totalSocketConnections || 0);
+        const starts = Math.max(0, stats.totalGameStarts || 0);
+        const sessionsStarted = Math.max(0, stats.sessionsStarted || 0);
+        const completed = Math.max(0, stats.completedSessions || 0);
+        const conversion = socketConnections > 0 ? (starts / socketConnections) * 100 : 0;
+        const completionRate = sessionsStarted > 0 ? (completed / sessionsStarted) * 100 : 0;
+
+        sessionMetrics.innerHTML = [
+          ['Socket to Start Conversion', formatPercent(conversion)],
+          ['Completed Session Rate', formatPercent(completionRate)],
+          ['Average Session Length', formatSeconds(stats.averageSessionSeconds || 0)],
+          ['Active Session Count', formatNumber(stats.activePlayers || 0)]
+        ].map((row) => {
+          return '<div class="metric-row"><div class="metric-label">' + escapeHtml(row[0]) + '</div><div class="metric-value">' + escapeHtml(row[1]) + '</div></div>';
+        }).join('');
+
+        const message = computeQualityMessage(stats);
+        qualityMessage.textContent = message;
+        headlineStatus.textContent = message;
+        headlineStatus.className = 'status-pill ' + statusTone(message);
+      }
+
+      function renderDashboard(stats) {
+        statsCache = stats;
+        setError('');
+
+        const updatedAt = stats.generatedAt ? new Date(stats.generatedAt) : null;
+        lastUpdatedEl.textContent = updatedAt && !Number.isNaN(updatedAt.getTime())
+          ? updatedAt.toLocaleString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', month: 'short', day: 'numeric' })
+          : 'Unknown';
+
+        renderCards(mainStats, [
+          { label: 'Active Players', value: formatNumber(stats.activePlayers), note: 'Live started sessions' },
+          { label: 'Peak Active Players', value: formatNumber(stats.peakActivePlayers), note: 'Highest concurrent tester count seen' },
+          { label: 'Total Game Starts', value: formatNumber(stats.totalGameStarts), note: 'Real testers only via hello event' },
+          { label: 'Total Socket Connections', value: formatNumber(stats.totalSocketConnections), note: 'All incoming sockets before game start' },
+          { label: 'Completed Sessions', value: formatNumber(stats.completedSessions), note: 'Sessions that ended with disconnect after starting' },
+          { label: 'Average Session Seconds', value: formatSeconds(stats.averageSessionSeconds), note: 'Average across completed sessions' },
+          { label: 'Player Deaths', value: formatNumber(stats.totalDeaths), note: 'Human player deaths only' },
+          { label: 'Player Kills', value: formatNumber(stats.totalKills), note: 'Human player kills only' }
+        ]);
+
+        renderCards(combatStats, [
+          { label: 'Player Killed Bot', value: formatNumber(stats.playerKilledBot), note: 'Human over bot eliminations' },
+          { label: 'Bot Killed Player', value: formatNumber(stats.botKilledPlayer), note: 'Bot pressure on real testers' },
+          { label: 'Player Killed Player', value: formatNumber(stats.playerKilledPlayer), note: 'Real PvP eliminations' },
+          { label: 'Bot Killed Bot', value: formatNumber(stats.botKilledBot), note: 'Background bot combat noise' },
+          { label: 'Bot Deaths', value: formatNumber(stats.botDeaths), note: 'All dead bots' },
+          { label: 'Bot Kills', value: formatNumber(stats.botKills), note: 'All kills made by bots' }
+        ]);
+
+        renderSessionQuality(stats);
+        renderEvents(stats);
+      }
+
+      async function loadStats() {
+        if (loading) return;
+        if (!token) {
+          setError('Missing token in dashboard URL. Open /admin/dashboard?token=YOUR_SECRET.');
+          headlineStatus.textContent = 'Dashboard locked';
+          headlineStatus.className = 'status-pill danger';
+          return;
+        }
+
+        loading = true;
+        refreshButton.disabled = true;
+        try {
+          const response = await fetch('/admin/stats?token=' + encodeURIComponent(token), {
+            cache: 'no-store',
+            headers: { 'Accept': 'application/json' }
+          });
+
+          if (response.status === 403) {
+            let message = 'Locked. Token rejected by /admin/stats.';
+            try {
+              const body = await response.json();
+              if (body && body.message) message = body.message;
+            } catch (error) {
+              // ignore parse failure
+            }
+            setError(message);
+            headlineStatus.textContent = 'Dashboard locked';
+            headlineStatus.className = 'status-pill danger';
+            return;
+          }
+
+          if (!response.ok) {
+            throw new Error('Stats request failed with status ' + response.status);
+          }
+
+          const data = await response.json();
+          renderDashboard(data);
+        } catch (error) {
+          setError(error && error.message ? error.message : 'Unable to refresh analytics right now.');
+        } finally {
+          refreshButton.disabled = false;
+          loading = false;
+        }
+      }
+
+      refreshButton.addEventListener('click', () => {
+        loadStats();
+      });
+
+      eventFilters.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-filter]');
+        if (!button) return;
+        activeFilter = button.getAttribute('data-filter') || 'all';
+        for (const chip of eventFilters.querySelectorAll('[data-filter]')) {
+          chip.classList.toggle('active', chip === button);
+        }
+        if (statsCache) renderEvents(statsCache);
+      });
+
+      loadStats();
+      window.setInterval(loadStats, 5000);
+    })();
+  </script>
+</body>
+</html>`;
+}
+
+function renderStatsLockedPage(title, message) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title}</title>
+  <style>
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background: radial-gradient(circle at top, rgba(255, 79, 112, 0.16), transparent 20rem), linear-gradient(180deg, #05070d, #03050a);
+      color: #eef6ff;
+      font-family: "Segoe UI Variable", "Bahnschrift", system-ui, sans-serif;
+    }
+    body {
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .locked {
+      max-width: 720px;
+      border-radius: 22px;
+      padding: 28px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(12, 16, 27, 0.92);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+    }
+    .eyebrow {
+      color: #ff4f70;
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.24em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 12px 0 10px;
+      font-size: clamp(28px, 5vw, 46px);
+      line-height: 0.96;
+      text-transform: uppercase;
+    }
+    p {
+      margin: 0;
+      color: rgba(238, 246, 255, 0.7);
+      font-size: 16px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <section class="locked">
+    <div class="eyebrow">Access Restricted</div>
+    <h1>${title}</h1>
+    <p>${message}</p>
+  </section>
+</body>
+</html>`;
+}
+
 loadStatsFromDisk();
 recalculateAverageSessionSeconds();
 
@@ -207,20 +1150,26 @@ app.get("/health", (req, res) => {
 });
 
 app.get("/admin/stats", (req, res) => {
-  const token = process.env.STATS_TOKEN;
-  if (!token) {
+  const authError = getStatsAccessError(req);
+  if (authError) {
     return res.status(403).json({
       ok: false,
-      message: "STATS_TOKEN is not configured on this server."
-    });
-  }
-  if (req.query.token !== token) {
-    return res.status(403).json({
-      ok: false,
-      message: "Invalid token."
+      code: authError.code,
+      message: authError.message
     });
   }
   return res.json(analyticsSnapshot());
+});
+
+app.get("/admin/dashboard", (req, res) => {
+  const authError = getStatsAccessError(req);
+  if (authError) {
+    return res
+      .status(authError.status)
+      .send(renderStatsLockedPage("Dashboard Locked", authError.message));
+  }
+
+  return res.type("html").send(renderStatsDashboardPage());
 });
 
 app.use(express.static(path.join(__dirname, "public"), {
