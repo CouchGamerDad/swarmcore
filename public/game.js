@@ -54,11 +54,14 @@ function isMobilePerformanceMode() {
 function getRenderQuality() {
   const mobile = isMobilePerformanceMode();
   const alivePlayers = state.players.filter((player) => player.alive);
+  const aliveCount = alivePlayers.length;
+  const totalDrones = alivePlayers.reduce((sum, player) => sum + Math.max(0, player.drones || 0), 0);
+  const bigSwarmCount = alivePlayers.filter((player) => (player.drones || 0) >= 500).length;
 
   if (mobile) {
     return {
-      mobile,
-      heavyScene: false,
+      mobile: true,
+      heavyScene: true,
       maxPlayersDrawn: 18,
       selfDotBudget: 160,
       otherDotBudget: 70,
@@ -71,26 +74,12 @@ function getRenderQuality() {
     };
   }
 
-  let visibleDroneCount = 0;
-  for (const player of alivePlayers) {
-    const core = worldToScreen(player.x, player.y);
-    const outerScreenRadius = (player.drones > 1 ? droneDistance(player, player.drones - 1) + 180 : 220) * camera.zoom;
-    const offscreen =
-      core.x + outerScreenRadius < 0 ||
-      core.y + outerScreenRadius < 0 ||
-      core.x - outerScreenRadius > innerWidth ||
-      core.y - outerScreenRadius > innerHeight;
-    if (offscreen) continue;
-    visibleDroneCount += player.drones;
-  }
-
-  const heavySwarmPlayers = alivePlayers.filter((player) => player.drones >= 500).length;
-  const heavyScene = alivePlayers.length >= 20 || visibleDroneCount >= 7000 || heavySwarmPlayers >= 5;
+  const heavyScene = aliveCount >= 20 || totalDrones >= 7000 || bigSwarmCount >= 5;
 
   if (heavyScene) {
     return {
-      mobile,
-      heavyScene,
+      mobile: false,
+      heavyScene: true,
       maxPlayersDrawn: 28,
       selfDotBudget: 420,
       otherDotBudget: 90,
@@ -104,8 +93,8 @@ function getRenderQuality() {
   }
 
   return {
-    mobile,
-    heavyScene,
+    mobile: false,
+    heavyScene: false,
     maxPlayersDrawn: 60,
     selfDotBudget: 700,
     otherDotBudget: 180,
@@ -666,16 +655,24 @@ function drawShards(quality) {
 
 function drawPlayers(quality) {
   const selfRaw = me();
-  const self = selfRaw && selfRaw.alive ? renderPlayer(selfRaw) : null;
+  const self = selfRaw ? renderPlayer(selfRaw) : null;
+  let alive = state.players.filter((player) => player.alive);
 
-  const others = state.players
-    .filter((player) => player.alive && player.id !== myId)
+  if (!self) {
+    alive = alive.slice(0, quality.maxPlayersDrawn);
+    for (const player of alive) drawPlayer(renderPlayer(player), quality);
+    return;
+  }
+
+  const selfEntry = alive.find((player) => player.id === myId);
+
+  const others = alive
+    .filter((player) => player.id !== myId)
     .map((player) => {
-      const rendered = renderPlayer(player);
-      const dx = self ? rendered.x - self.x : 0;
-      const dy = self ? rendered.y - self.y : 0;
+      const dx = player.x - self.x;
+      const dy = player.y - self.y;
       return {
-        player: rendered,
+        player,
         distance: Math.hypot(dx, dy)
       };
     })
@@ -683,15 +680,14 @@ function drawPlayers(quality) {
       if (a.player.bountyRank && !b.player.bountyRank) return -1;
       if (!a.player.bountyRank && b.player.bountyRank) return 1;
       return a.distance - b.distance;
-    });
+    })
+    .slice(0, Math.max(0, quality.maxPlayersDrawn - 1))
+    .map((entry) => entry.player);
 
-  const maxOthers = self ? Math.max(0, quality.maxPlayersDrawn - 1) : quality.maxPlayersDrawn;
-  for (const entry of others.slice(0, maxOthers)) {
-    drawPlayer(entry.player, quality);
-  }
+  const ordered = selfEntry ? [...others, selfEntry] : others;
 
-  if (self) {
-    drawPlayer(self, quality);
+  for (const player of ordered) {
+    drawPlayer(renderPlayer(player), quality);
   }
 }
 
@@ -862,6 +858,17 @@ function drawPlayer(player, quality) {
   const palette = playerPalette(player);
   const color = player.color || palette[0];
 
+  const outerScreenRadius = (player.drones > 1 ? droneDistance(player, player.drones - 1) + 180 : 220) * camera.zoom;
+
+  if (!isMe && (
+    core.x + outerScreenRadius < 0 ||
+    core.y + outerScreenRadius < 0 ||
+    core.x - outerScreenRadius > innerWidth ||
+    core.y - outerScreenRadius > innerHeight
+  )) {
+    return;
+  }
+
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
 
@@ -890,19 +897,6 @@ function drawPlayer(player, quality) {
     ctx.beginPath();
     ctx.arc(core.x, core.y, (46 + Math.sqrt(player.drones) * 9) * camera.zoom, 0, Math.PI * 2);
     ctx.stroke();
-  }
-
-  const outerScreenRadius = (player.drones > 1 ? droneDistance(player, player.drones - 1) + 180 : 220) * camera.zoom;
-  if (!isMe) {
-    const offscreen =
-      core.x + outerScreenRadius < 0 ||
-      core.y + outerScreenRadius < 0 ||
-      core.x - outerScreenRadius > innerWidth ||
-      core.y - outerScreenRadius > innerHeight;
-    if (offscreen) {
-      ctx.restore();
-      return;
-    }
   }
 
   drawSwarmMass(player, core, color, isMe, quality);
@@ -973,7 +967,7 @@ function drawSwarmMass(player, core, color, isMe, quality) {
   const palette = playerPalette(player);
   const alphaScale = quality.useGlow ? 1 : 0.55;
   ctx.save();
-  ctx.globalCompositeOperation = "lighter";
+  ctx.globalCompositeOperation = quality.useGlow ? "lighter" : "source-over";
   ctx.shadowBlur = 0;
 
   if (player.style === "blade") {
