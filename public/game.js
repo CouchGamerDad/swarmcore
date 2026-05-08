@@ -166,7 +166,10 @@ function updateHud() {
   stylePanel.classList.toggle("hidden", !shouldPickStyle);
 
   leaderboardEl.innerHTML = "";
-  for (const row of state.leaderboard) {
+  const isMobileHud = window.matchMedia("(pointer: coarse), (max-width: 760px)").matches;
+  const leaderboardRows = isMobileHud ? state.leaderboard.slice(0, 5) : state.leaderboard;
+
+  for (const row of leaderboardRows) {
     const li = document.createElement("li");
     li.className = row.id === myId ? "you" : "";
     const bounty = row.bountyRank ? " *" : "";

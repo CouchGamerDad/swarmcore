@@ -275,43 +275,92 @@ button:active {
 }
 
 @media (pointer: coarse), (max-width: 760px) {
-  .leaderboard {
-    top: auto;
-    right: 10px;
-    bottom: 92px;
-    width: 204px;
-  }
-
   .top-left {
-    left: 10px;
-    top: 10px;
+    left: max(8px, env(safe-area-inset-left));
+    top: max(8px, env(safe-area-inset-top));
+    gap: 4px;
+    padding: 6px;
+    max-width: calc(100vw - 16px);
   }
 
   .stat {
-    min-width: 58px;
-    padding: 6px;
+    min-width: 52px;
+    padding: 5px 6px;
+  }
+
+  .stat span {
+    font-size: 10px;
   }
 
   .stat strong {
-    font-size: 15px;
+    font-size: 14px;
+  }
+
+  .leaderboard {
+    top: 72px;
+    right: max(8px, env(safe-area-inset-right));
+    bottom: auto;
+    width: 150px;
+    max-height: 170px;
+    padding: 8px;
+    overflow: hidden;
+  }
+
+  .board-title {
+    margin-bottom: 6px;
+    font-size: 11px;
+  }
+
+  #leaderboard {
+    gap: 4px;
+  }
+
+  #leaderboard li {
+    grid-template-columns: 22px 1fr auto;
+    gap: 6px;
+    min-height: 22px;
+    font-size: 11px;
+  }
+
+  #leaderboard .score {
+    font-size: 11px;
+  }
+
+  #leaderboard .swarm {
+    display: none;
   }
 
   .storm {
-    bottom: 86px;
-    max-width: calc(100vw - 28px);
+    left: 50%;
+    top: max(8px, env(safe-area-inset-top));
+    bottom: auto;
+    max-width: 180px;
+    padding: 6px 10px;
+    transform: translateX(-50%);
     text-align: center;
+    font-size: 10px;
+    z-index: 6;
   }
 
   .minimap {
-    right: 10px;
-    bottom: 302px;
-    width: 134px;
-    height: 134px;
+    display: none;
   }
 
   #minimap {
-    width: 130px;
-    height: 130px;
+    display: none;
+  }
+
+  .style-panel {
+    top: 64px;
+    width: calc(100vw - 16px);
+  }
+
+  .style-grid {
+    gap: 6px;
+  }
+
+  .style-grid button {
+    height: 56px;
   }
 
   .mobile-controls {
@@ -321,13 +370,13 @@ button:active {
     display: flex;
     justify-content: space-between;
     align-items: end;
-    padding: 0 18px 18px;
+    padding: 0 max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
     pointer-events: none;
   }
 
   .stick-base {
-    width: 116px;
-    height: 116px;
+    width: 104px;
+    height: 104px;
     border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 50%;
     background: rgba(255, 255, 255, 0.08);
@@ -335,9 +384,9 @@ button:active {
   }
 
   .stick-knob {
-    width: 48px;
-    height: 48px;
-    margin: 34px;
+    width: 42px;
+    height: 42px;
+    margin: 31px;
     border-radius: 50%;
     background: rgba(89, 243, 255, 0.8);
     box-shadow: 0 0 18px rgba(89, 243, 255, 0.8);
@@ -345,11 +394,47 @@ button:active {
 
   .mobile-actions {
     display: grid;
-    gap: 10px;
+    gap: 8px;
     pointer-events: auto;
   }
 
   .mobile-actions button {
-    width: 86px;
+    width: 82px;
+    height: 50px;
+    font-size: 15px;
+  }
+}
+
+@media (pointer: coarse) and (max-height: 520px) {
+  .top-left {
+    transform: scale(0.9);
+    transform-origin: top left;
+  }
+
+  .leaderboard {
+    top: 56px;
+    width: 138px;
+    max-height: 130px;
+  }
+
+  .storm {
+    display: none;
+  }
+
+  .stick-base {
+    width: 88px;
+    height: 88px;
+  }
+
+  .stick-knob {
+    width: 36px;
+    height: 36px;
+    margin: 26px;
+  }
+
+  .mobile-actions button {
+    width: 76px;
+    height: 44px;
+    font-size: 14px;
   }
 }
