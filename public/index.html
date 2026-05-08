@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>SwarmCore.io</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+
+    <section id="startPanel" class="panel start-panel">
+      <div class="brand">SwarmCore.io</div>
+      <input id="nameInput" maxlength="16" autocomplete="off" placeholder="Core name">
+      <div id="skinPicker" class="skin-picker" aria-label="Skin">
+        <button class="skin active" data-skin="cyan" style="--skin:#55f7ff;--skin2:#9ffbff;--skin3:#55f7ff" title="Cyan"></button>
+        <button class="skin" data-skin="magenta" style="--skin:#ff4fd8;--skin2:#ff9bea;--skin3:#ff4fd8" title="Magenta"></button>
+        <button class="skin" data-skin="amber" style="--skin:#ffe66d;--skin2:#ffb84d;--skin3:#ffe66d" title="Amber"></button>
+        <button class="skin" data-skin="venom" style="--skin:#7dff8a;--skin2:#54ffc6;--skin3:#7dff8a" title="Venom"></button>
+        <button class="skin" data-skin="flare" style="--skin:#ff8155;--skin2:#ffe66d;--skin3:#ff4f70" title="Flare"></button>
+        <button class="skin" data-skin="violet" style="--skin:#9c7dff;--skin2:#ff4fd8;--skin3:#9c7dff" title="Violet"></button>
+        <button class="skin" data-skin="glacier" style="--skin:#4da3ff;--skin2:#55f7ff;--skin3:#f9fbff" title="Glacier"></button>
+        <button class="skin" data-skin="ghost" style="--skin:#f9fbff;--skin2:#b9c8ff;--skin3:#f9fbff" title="Ghost"></button>
+        <button class="skin" data-skin="prism" style="--skin:#55f7ff;--skin2:#ff4fd8;--skin3:#ffe66d" title="Prism"></button>
+        <button class="skin" data-skin="inferno" style="--skin:#ff4f70;--skin2:#ff8155;--skin3:#ffe66d" title="Inferno"></button>
+        <button class="skin" data-skin="aurora" style="--skin:#54ffc6;--skin2:#55f7ff;--skin3:#9c7dff" title="Aurora"></button>
+        <button class="skin" data-skin="eclipse" style="--skin:#f9fbff;--skin2:#9c7dff;--skin3:#141827" title="Eclipse"></button>
+        <button class="skin" data-skin="candy" style="--skin:#ff9bea;--skin2:#55f7ff;--skin3:#ffe66d" title="Candy"></button>
+        <button class="skin" data-skin="hazard" style="--skin:#ffe66d;--skin2:#101827;--skin3:#ff8155" title="Hazard"></button>
+        <button class="skin" data-skin="plasma" style="--skin:#ff4fd8;--skin2:#9c7dff;--skin3:#55f7ff" title="Plasma"></button>
+        <button class="skin" data-skin="matrix" style="--skin:#7dff8a;--skin2:#54ffc6;--skin3:#d8ffe0" title="Matrix"></button>
+      </div>
+      <button id="playButton">Play</button>
+    </section>
+
+    <section id="deadPanel" class="panel dead-panel hidden">
+      <div class="brand small">Core cracked</div>
+      <button id="respawnButton">Respawn</button>
+    </section>
+
+    <section id="stylePanel" class="panel style-panel hidden">
+      <div class="style-title">Choose swarm</div>
+      <div class="style-grid">
+        <button data-style="ring">
+          <span>Ring</span>
+          <small>Defense</small>
+        </button>
+        <button data-style="blade">
+          <span>Blade</span>
+          <small>Damage</small>
+        </button>
+        <button data-style="cloud">
+          <span>Cloud</span>
+          <small>Chaos</small>
+        </button>
+      </div>
+    </section>
+
+    <aside class="hud top-left">
+      <div class="stat"><span>Level</span><strong id="levelStat">1</strong></div>
+      <div class="stat"><span>Swarm</span><strong id="droneStat">1</strong></div>
+      <div class="stat"><span>Skill</span><strong id="pulseStat">Locked</strong></div>
+    </aside>
+
+    <aside class="hud leaderboard">
+      <div class="board-title">Leaderboard</div>
+      <ol id="leaderboard"></ol>
+    </aside>
+
+    <aside class="hud storm">
+      <span id="stormText">Reactor storm charging</span>
+    </aside>
+
+    <aside class="hud minimap">
+      <canvas id="minimap" width="180" height="180"></canvas>
+    </aside>
+
+    <div class="mobile-controls">
+      <div id="stickBase" class="stick-base"><div id="stickKnob" class="stick-knob"></div></div>
+      <div class="mobile-actions">
+        <button id="mobilePulse">Pulse</button>
+        <button id="mobileBoost">Boost</button>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/game.js?v=titan-weakspots-1"></script>
+  </body>
+</html>
