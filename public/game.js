@@ -195,25 +195,61 @@ function isPlayerCoreNearViewport(player, quality) {
   );
 }
 
-function isPlayerWorthConsidering(player, self, quality) {
+function getPlayerOuterWorldRadius(player) {
+  return player && player.drones > 1
+    ? droneDistance(player, player.drones - 1) + 220
+    : 260;
+}
+
+function doesPlayerSwarmTouchViewport(player, quality) {
   if (!player || !player.alive) return false;
   if (player.id === myId) return true;
 
-  if (isPlayerCoreNearViewport(player, quality)) return true;
+  const p = worldToScreen(player.x, player.y);
+  const radius = getPlayerOuterWorldRadius(player) * camera.zoom;
 
+  const margin = quality.mobile
+    ? 80
+    : quality.heavyScene
+      ? 120
+      : 180;
+
+  return !(
+    p.x + radius < -margin ||
+    p.y + radius < -margin ||
+    p.x - radius > innerWidth + margin ||
+    p.y - radius > innerHeight + margin
+  );
+}
+
+function canPlayerSwarmThreatenSelf(player, self, quality) {
+  if (!player || !player.alive) return false;
   if (!self) return false;
+  if (player.id === myId) return true;
 
   const dx = player.x - self.x;
   const dy = player.y - self.y;
   const distance = Math.hypot(dx, dy);
 
-  const maxDistance = quality.mobile
-    ? 2600
-    : quality.heavyScene
-      ? 3200
-      : 4600;
+  const playerRadius = getPlayerOuterWorldRadius(player);
+  const selfRadius = getPlayerOuterWorldRadius(self);
 
-  return distance < maxDistance && !quality.heavyScene;
+  const threatMargin = quality.mobile ? 260 : 380;
+
+  return distance < playerRadius + selfRadius + threatMargin;
+}
+
+function shouldConsiderPlayerForRender(player, self, quality) {
+  if (!player || !player.alive) return false;
+  if (player.id === myId) return true;
+
+  if (isPlayerCoreNearViewport(player, quality)) return true;
+
+  if (doesPlayerSwarmTouchViewport(player, quality)) return true;
+
+  if (canPlayerSwarmThreatenSelf(player, self, quality)) return true;
+
+  return false;
 }
 
 function screenToWorld(x, y) {
@@ -701,7 +737,7 @@ function drawPlayers(quality) {
 
   if (!self) {
     const fallback = alive
-      .filter((player) => isPlayerCoreNearViewport(player, quality))
+      .filter((player) => shouldConsiderPlayerForRender(player, null, quality))
       .slice(0, quality.maxPlayersDrawn);
 
     for (const player of fallback) {
@@ -715,7 +751,7 @@ function drawPlayers(quality) {
 
   const others = alive
     .filter((player) => player.id !== myId)
-    .filter((player) => isPlayerCoreNearViewport(player, quality))
+    .filter((player) => shouldConsiderPlayerForRender(player, self, quality))
     .map((player) => {
       const dx = player.x - self.x;
       const dy = player.y - self.y;
@@ -900,13 +936,88 @@ function droneAngle(player, index) {
   return orbit + (position / Math.min(ringSize, count - layer * ringSize)) * Math.PI * 2 + layer * 0.19;
 }
 
+function drawOffscreenSwarmThreat(player, quality) {
+  const core = worldToScreen(player.x, player.y);
+  const color = player.color || "#ffe66d";
+  const outerRadius = getPlayerOuterWorldRadius(player) * camera.zoom;
+
+  ctx.save();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.shadowBlur = 0;
+
+  ctx.strokeStyle = player.bountyRank
+    ? "rgba(255, 230, 109, 0.42)"
+    : "rgba(255, 255, 255, 0.22)";
+
+  ctx.lineWidth = quality.mobile ? 2 : 3;
+  ctx.setLineDash([10, 10]);
+  ctx.beginPath();
+  ctx.arc(core.x, core.y, outerRadius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const maxDots = quality.mobile
+    ? 72
+    : quality.heavyScene
+      ? 110
+      : 150;
+
+  const count = Math.max(1, player.drones || 1);
+  const stride = Math.max(1, Math.floor(count / maxDots));
+
+  ctx.fillStyle = color;
+
+  for (let i = 0; i < count; i += stride) {
+    const angle = droneAngle(player, i);
+    const distance = droneDistance(player, i);
+    const p = worldToScreen(
+      player.x + Math.cos(angle) * distance,
+      player.y + Math.sin(angle) * distance
+    );
+
+    if (
+      p.x < -18 ||
+      p.y < -18 ||
+      p.x > innerWidth + 18 ||
+      p.y > innerHeight + 18
+    ) {
+      continue;
+    }
+
+    ctx.globalAlpha = player.bountyRank ? 0.82 : 0.58;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, quality.mobile ? 3.2 : 4.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.globalAlpha = 1;
+
+  const edgeX = clamp(core.x, 22, innerWidth - 22);
+  const edgeY = clamp(core.y, 22, innerHeight - 22);
+
+  ctx.fillStyle = player.bountyRank ? "#ffe66d" : color;
+  ctx.beginPath();
+  ctx.arc(edgeX, edgeY, player.bountyRank ? 7 : 5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
 function drawPlayer(player, quality) {
   const core = worldToScreen(player.x, player.y);
   const isMe = player.id === myId;
   const palette = playerPalette(player);
   const color = player.color || palette[0];
 
-  if (!isMe && !isPlayerCoreNearViewport(player, quality)) {
+  const coreNearViewport = isPlayerCoreNearViewport(player, quality);
+  const swarmTouchesViewport = doesPlayerSwarmTouchViewport(player, quality);
+
+  if (!isMe && !coreNearViewport && !swarmTouchesViewport) {
+    return;
+  }
+
+  if (!isMe && !coreNearViewport && swarmTouchesViewport) {
+    drawOffscreenSwarmThreat(player, quality);
     return;
   }
 
