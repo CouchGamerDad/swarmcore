@@ -32,6 +32,7 @@ let asteroids = [];
 let state = { players: [], shards: [], leaderboard: [], storm: { active: false } };
 const playerRenderCache = new Map();
 let camera = { x: 0, y: 0, zoom: 1 };
+let cameraLockedToPlayer = false;
 let mouse = { x: innerWidth / 2, y: innerHeight / 2, down: false };
 let target = { x: 0, y: 0 };
 let playing = false;
@@ -45,16 +46,26 @@ let stars = Array.from({ length: 180 }, () => ({
   a: Math.random() * 0.6 + 0.18
 }));
 
+function isMobilePerformanceMode() {
+  return window.matchMedia("(pointer: coarse), (max-width: 760px)").matches;
+}
+
 function resize() {
-  dpr = Math.min(devicePixelRatio || 1, 2);
+  const mobile = isMobilePerformanceMode();
+
+  dpr = mobile ? 1 : Math.min(devicePixelRatio || 1, 2);
+
   canvas.width = Math.floor(innerWidth * dpr);
   canvas.height = Math.floor(innerHeight * dpr);
   canvas.style.width = `${innerWidth}px`;
   canvas.style.height = `${innerHeight}px`;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  minimap.width = Math.floor(minimap.clientWidth * dpr);
-  minimap.height = Math.floor(minimap.clientHeight * dpr);
-  miniCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  if (!mobile) {
+    minimap.width = Math.floor(minimap.clientWidth * dpr);
+    minimap.height = Math.floor(minimap.clientHeight * dpr);
+    miniCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
 }
 
 addEventListener("resize", resize);
@@ -196,11 +207,13 @@ function escapeHtml(value) {
 
 playButton.addEventListener("click", () => {
   playing = true;
+  cameraLockedToPlayer = false;
   startPanel.classList.add("hidden");
   socket.emit("hello", { name: nameInput.value, skin: selectedSkin });
 });
 
 respawnButton.addEventListener("click", () => {
+  cameraLockedToPlayer = false;
   socket.emit("respawn", { name: nameInput.value, skin: selectedSkin });
 });
 
@@ -308,17 +321,46 @@ setInterval(() => {
   });
 }, 1000 / 30);
 
+let lastMobileDraw = 0;
+
 function draw() {
   requestAnimationFrame(draw);
+
+  const now = performance.now();
+  const mobile = isMobilePerformanceMode();
+
+  if (mobile && now - lastMobileDraw < 33) {
+    return;
+  }
+
+  if (mobile) {
+    lastMobileDraw = now;
+  }
+
   const player = me() ? renderPlayer(me()) : null;
   if (player) {
+    const mobile = isMobilePerformanceMode();
     const outerRadius = player.drones > 1 ? droneDistance(player, player.drones - 1) + 70 : 130;
-    const targetScreenRadius = clamp(Math.min(innerWidth, innerHeight) * 0.28, 150, 260);
-    const desiredZoom = clamp(targetScreenRadius / outerRadius, 0.055, 0.95);
-    const zoomEase = desiredZoom < camera.zoom ? 0.055 : 0.032;
-    camera.zoom += (desiredZoom - camera.zoom) * zoomEase;
-    camera.x += (player.x - camera.x) * 0.09;
-    camera.y += (player.y - camera.y) * 0.09;
+
+    const targetScreenRadius = mobile
+      ? clamp(Math.min(innerWidth, innerHeight) * 0.19, 80, 130)
+      : clamp(Math.min(innerWidth, innerHeight) * 0.28, 150, 260);
+
+    const desiredZoom = mobile
+      ? clamp(targetScreenRadius / outerRadius, 0.04, 0.72)
+      : clamp(targetScreenRadius / outerRadius, 0.055, 0.95);
+
+    if (!cameraLockedToPlayer) {
+      camera.x = player.x;
+      camera.y = player.y;
+      camera.zoom = desiredZoom;
+      cameraLockedToPlayer = true;
+    } else {
+      const zoomEase = desiredZoom < camera.zoom ? 0.07 : 0.04;
+      camera.zoom += (desiredZoom - camera.zoom) * zoomEase;
+      camera.x += (player.x - camera.x) * 0.14;
+      camera.y += (player.y - camera.y) * 0.14;
+    }
   }
 
   ctx.clearRect(0, 0, innerWidth, innerHeight);
@@ -327,7 +369,9 @@ function draw() {
   drawShards();
   drawPlayers();
   drawPlayerPings();
-  drawMinimap();
+  if (!isMobilePerformanceMode()) {
+    drawMinimap();
+  }
   drawVignette();
 }
 
@@ -338,6 +382,10 @@ function drawBackground() {
   gradient.addColorStop(1, "#03050a");
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, innerWidth, innerHeight);
+
+  if (isMobilePerformanceMode()) {
+    return;
+  }
 
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
@@ -426,14 +474,18 @@ function drawAsteroids() {
 
 function drawShards() {
   ctx.save();
-  ctx.globalCompositeOperation = "lighter";
+  const mobile = isMobilePerformanceMode();
+  ctx.globalCompositeOperation = mobile ? "source-over" : "lighter";
+  let drawn = 0;
+
   for (const shard of state.shards) {
+    if (mobile && drawn > 140) break;
     const p = worldToScreen(shard.x, shard.y);
     if (p.x < -20 || p.y < -20 || p.x > innerWidth + 20 || p.y > innerHeight + 20) continue;
     const isDroneLoot = shard.kind === "drone";
     const lootScale = isDroneLoot ? Math.min(2.1, 1 + Math.log10(Math.max(1, shard.value / 10)) * 0.34) : 1;
     const r = (isDroneLoot ? 10 * lootScale : shard.rare ? 8 : 5) * camera.zoom;
-    ctx.shadowBlur = isDroneLoot ? 22 : shard.rare ? 18 : 10;
+    ctx.shadowBlur = mobile ? 0 : isDroneLoot ? 22 : shard.rare ? 18 : 10;
     ctx.shadowColor = isDroneLoot ? "#ffb84d" : shard.rare ? "#ffe66d" : "#59f3ff";
     ctx.fillStyle = isDroneLoot ? "#ffb84d" : shard.rare ? "#ffe66d" : "#59f3ff";
     ctx.beginPath();
@@ -446,14 +498,54 @@ function drawShards() {
       ctx.arc(p.x, p.y, Math.max(3.4, r * 0.58), 0, Math.PI * 2);
       ctx.stroke();
     }
+
+    drawn++;
   }
   ctx.restore();
 }
 
 function drawPlayers() {
-  const ordered = [...state.players].sort((a, b) => (a.id === myId ? 1 : 0) - (b.id === myId ? 1 : 0));
+  const selfRaw = me();
+  const self = selfRaw ? renderPlayer(selfRaw) : null;
+  const mobile = isMobilePerformanceMode();
+
+  let ordered = [...state.players].filter((player) => player.alive);
+
+  if (mobile && self) {
+    const selfEntry = ordered.find((player) => player.id === myId);
+
+    const nearbyOthers = ordered
+      .filter((player) => player.id !== myId)
+      .map((player) => {
+        const dx = player.x - self.x;
+        const dy = player.y - self.y;
+
+        return {
+          player,
+          distance: Math.hypot(dx, dy)
+        };
+      })
+      .filter((entry) => entry.distance < 2600 || entry.player.bountyRank)
+      .sort((a, b) => {
+        if (a.player.bountyRank && !b.player.bountyRank) return -1;
+        if (!a.player.bountyRank && b.player.bountyRank) return 1;
+        return a.distance - b.distance;
+      })
+      .slice(0, 17)
+      .map((entry) => entry.player);
+
+    ordered = selfEntry
+      ? [...nearbyOthers, selfEntry]
+      : nearbyOthers;
+  } else {
+    ordered.sort((a, b) => {
+      if (a.id === myId) return 1;
+      if (b.id === myId) return -1;
+      return 0;
+    });
+  }
+
   for (const player of ordered) {
-    if (!player.alive) continue;
     drawPlayer(renderPlayer(player));
   }
 }
@@ -655,9 +747,18 @@ function drawPlayer(player) {
 
   drawSwarmMass(player, core, color, isMe);
 
-  const maxDots = player.drones <= 420 ? player.drones : (isMe ? 900 : 260);
+  const mobile = isMobilePerformanceMode();
+  const maxDots = mobile
+    ? Math.min(player.drones, isMe ? 160 : 70)
+    : player.drones <= 420
+      ? player.drones
+      : isMe
+        ? 900
+        : 260;
+
   const stride = Math.max(1, Math.floor(player.drones / Math.max(1, maxDots)));
-  ctx.shadowBlur = player.drones > 420 ? 9 : 16;
+  ctx.shadowBlur = mobile ? 0 : player.drones > 420 ? 9 : 16;
+
   for (let i = 0; i < player.drones; i += stride) {
     const dotColor = droneColor(player, i);
     const angle = droneAngle(player, i);
@@ -666,7 +767,7 @@ function drawPlayer(player) {
       player.x + Math.cos(angle) * distance,
       player.y + Math.sin(angle) * distance
     );
-    ctx.shadowBlur = 16;
+    ctx.shadowBlur = mobile ? 0 : 16;
     ctx.shadowColor = dotColor;
     ctx.fillStyle = dotColor;
     ctx.beginPath();
@@ -750,7 +851,8 @@ function drawSwarmMass(player, core, color, isMe) {
     return;
   }
 
-  const bands = Math.min(26, Math.max(8, Math.floor(Math.sqrt(player.drones) / 5)));
+  const mobile = isMobilePerformanceMode();
+  const bands = mobile ? 6 : Math.min(26, Math.max(8, Math.floor(Math.sqrt(player.drones) / 5)));
   ctx.lineWidth = Math.max(1.2, 2.2 * camera.zoom);
   for (let i = 1; i <= bands; i++) {
     const r = (54 + (i / bands) * (58 + Math.sqrt(player.drones) * 31)) * camera.zoom;
@@ -785,7 +887,7 @@ function drawWeakSpots(player) {
 
     const hpRatio = clamp(spot.hp / 3, 0, 1);
     const color = hpRatio > 0.66 ? "#ffe66d" : hpRatio > 0.33 ? "#ff8155" : "#ff4f70";
-    ctx.shadowBlur = 22;
+    ctx.shadowBlur = isMobilePerformanceMode() ? 0 : 22;
     ctx.shadowColor = color;
     ctx.fillStyle = color;
     ctx.beginPath();
