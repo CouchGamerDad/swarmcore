@@ -175,6 +175,47 @@ function worldToScreen(x, y) {
   };
 }
 
+function isPlayerCoreNearViewport(player, quality) {
+  if (!player) return false;
+  if (player.id === myId) return true;
+
+  const p = worldToScreen(player.x, player.y);
+
+  const margin = quality.mobile
+    ? 180
+    : quality.heavyScene
+      ? 260
+      : 420;
+
+  return !(
+    p.x < -margin ||
+    p.y < -margin ||
+    p.x > innerWidth + margin ||
+    p.y > innerHeight + margin
+  );
+}
+
+function isPlayerWorthConsidering(player, self, quality) {
+  if (!player || !player.alive) return false;
+  if (player.id === myId) return true;
+
+  if (isPlayerCoreNearViewport(player, quality)) return true;
+
+  if (!self) return false;
+
+  const dx = player.x - self.x;
+  const dy = player.y - self.y;
+  const distance = Math.hypot(dx, dy);
+
+  const maxDistance = quality.mobile
+    ? 2600
+    : quality.heavyScene
+      ? 3200
+      : 4600;
+
+  return distance < maxDistance && !quality.heavyScene;
+}
+
 function screenToWorld(x, y) {
   return {
     x: (x - innerWidth / 2) / camera.zoom + camera.x,
@@ -656,11 +697,17 @@ function drawShards(quality) {
 function drawPlayers(quality) {
   const selfRaw = me();
   const self = selfRaw ? renderPlayer(selfRaw) : null;
-  let alive = state.players.filter((player) => player.alive);
+  const alive = state.players.filter((player) => player.alive);
 
   if (!self) {
-    alive = alive.slice(0, quality.maxPlayersDrawn);
-    for (const player of alive) drawPlayer(renderPlayer(player), quality);
+    const fallback = alive
+      .filter((player) => isPlayerCoreNearViewport(player, quality))
+      .slice(0, quality.maxPlayersDrawn);
+
+    for (const player of fallback) {
+      drawPlayer(renderPlayer(player), quality);
+    }
+
     return;
   }
 
@@ -668,6 +715,7 @@ function drawPlayers(quality) {
 
   const others = alive
     .filter((player) => player.id !== myId)
+    .filter((player) => isPlayerCoreNearViewport(player, quality))
     .map((player) => {
       const dx = player.x - self.x;
       const dy = player.y - self.y;
@@ -858,14 +906,7 @@ function drawPlayer(player, quality) {
   const palette = playerPalette(player);
   const color = player.color || palette[0];
 
-  const outerScreenRadius = (player.drones > 1 ? droneDistance(player, player.drones - 1) + 180 : 220) * camera.zoom;
-
-  if (!isMe && (
-    core.x + outerScreenRadius < 0 ||
-    core.y + outerScreenRadius < 0 ||
-    core.x - outerScreenRadius > innerWidth ||
-    core.y - outerScreenRadius > innerHeight
-  )) {
+  if (!isMe && !isPlayerCoreNearViewport(player, quality)) {
     return;
   }
 
