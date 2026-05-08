@@ -38,6 +38,7 @@ let target = { x: 0, y: 0 };
 let playing = false;
 let boostHeld = false;
 let touchVector = null;
+let activeStickTouchId = null;
 let selectedSkin = "cyan";
 let stars = Array.from({ length: 180 }, () => ({
   x: (Math.random() - 0.5) * 5400,
@@ -48,6 +49,73 @@ let stars = Array.from({ length: 180 }, () => ({
 
 function isMobilePerformanceMode() {
   return window.matchMedia("(pointer: coarse), (max-width: 760px)").matches;
+}
+
+function getRenderQuality() {
+  const mobile = isMobilePerformanceMode();
+  const alivePlayers = state.players.filter((player) => player.alive);
+
+  if (mobile) {
+    return {
+      mobile,
+      heavyScene: false,
+      maxPlayersDrawn: 18,
+      selfDotBudget: 160,
+      otherDotBudget: 70,
+      shardBudget: 140,
+      swarmBands: 6,
+      useGlow: false,
+      drawStars: false,
+      drawMinimap: false,
+      drawPings: true
+    };
+  }
+
+  let visibleDroneCount = 0;
+  for (const player of alivePlayers) {
+    const core = worldToScreen(player.x, player.y);
+    const outerScreenRadius = (player.drones > 1 ? droneDistance(player, player.drones - 1) + 180 : 220) * camera.zoom;
+    const offscreen =
+      core.x + outerScreenRadius < 0 ||
+      core.y + outerScreenRadius < 0 ||
+      core.x - outerScreenRadius > innerWidth ||
+      core.y - outerScreenRadius > innerHeight;
+    if (offscreen) continue;
+    visibleDroneCount += player.drones;
+  }
+
+  const heavySwarmPlayers = alivePlayers.filter((player) => player.drones >= 500).length;
+  const heavyScene = alivePlayers.length >= 20 || visibleDroneCount >= 7000 || heavySwarmPlayers >= 5;
+
+  if (heavyScene) {
+    return {
+      mobile,
+      heavyScene,
+      maxPlayersDrawn: 28,
+      selfDotBudget: 420,
+      otherDotBudget: 90,
+      shardBudget: 220,
+      swarmBands: 8,
+      useGlow: false,
+      drawStars: false,
+      drawMinimap: true,
+      drawPings: true
+    };
+  }
+
+  return {
+    mobile,
+    heavyScene,
+    maxPlayersDrawn: 60,
+    selfDotBudget: 700,
+    otherDotBudget: 180,
+    shardBudget: 360,
+    swarmBands: 16,
+    useGlow: true,
+    drawStars: true,
+    drawMinimap: true,
+    drawPings: true
+  };
 }
 
 function resize() {
@@ -265,28 +333,50 @@ canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 
 mobileBoost.addEventListener("touchstart", (event) => {
   event.preventDefault();
+  event.stopPropagation();
   boostHeld = true;
-});
+}, { passive: false });
 mobileBoost.addEventListener("touchend", (event) => {
   event.preventDefault();
+  event.stopPropagation();
   boostHeld = false;
-});
+}, { passive: false });
+mobileBoost.addEventListener("touchcancel", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  boostHeld = false;
+}, { passive: false });
 mobilePulse.addEventListener("touchstart", (event) => {
   event.preventDefault();
+  event.stopPropagation();
   socket.emit("pulse");
-});
-
-stickBase.addEventListener("touchstart", handleStick, { passive: false });
-stickBase.addEventListener("touchmove", handleStick, { passive: false });
-stickBase.addEventListener("touchend", (event) => {
-  event.preventDefault();
-  touchVector = null;
-  stickKnob.style.transform = "translate(0, 0)";
 }, { passive: false });
 
-function handleStick(event) {
-  event.preventDefault();
-  const touch = event.changedTouches[0];
+function resetStick() {
+  activeStickTouchId = null;
+  touchVector = null;
+  stickKnob.style.transform = "translate(0, 0)";
+}
+
+function getTrackedTouch(event) {
+  if (activeStickTouchId === null) {
+    return event.changedTouches[0] || event.touches[0] || null;
+  }
+
+  for (const touch of event.touches) {
+    if (touch.identifier === activeStickTouchId) return touch;
+  }
+
+  for (const touch of event.changedTouches) {
+    if (touch.identifier === activeStickTouchId) return touch;
+  }
+
+  return null;
+}
+
+function updateStickFromTouch(touch) {
+  if (!touch) return;
+
   const rect = stickBase.getBoundingClientRect();
   const cx = rect.left + rect.width / 2;
   const cy = rect.top + rect.height / 2;
@@ -297,17 +387,87 @@ function handleStick(event) {
   const nx = dx / d;
   const ny = dy / d;
   const amount = Math.min(d, max);
+
   stickKnob.style.transform = `translate(${nx * amount}px, ${ny * amount}px)`;
-  touchVector = { x: nx * Math.min(d / max, 1), y: ny * Math.min(d / max, 1) };
+  touchVector = {
+    x: nx * Math.min(d / max, 1),
+    y: ny * Math.min(d / max, 1)
+  };
 }
+
+function handleStickStart(event) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  const touch = event.changedTouches[0] || event.touches[0];
+  if (!touch) return;
+
+  activeStickTouchId = touch.identifier;
+  updateStickFromTouch(touch);
+}
+
+function handleStickMove(event) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  const touch = getTrackedTouch(event);
+  if (!touch) return;
+
+  updateStickFromTouch(touch);
+}
+
+function handleStickEnd(event) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (activeStickTouchId === null) {
+    resetStick();
+    return;
+  }
+
+  for (const touch of event.changedTouches) {
+    if (touch.identifier === activeStickTouchId) {
+      resetStick();
+      return;
+    }
+  }
+}
+
+stickBase.addEventListener("touchstart", handleStickStart, { passive: false });
+stickBase.addEventListener("touchmove", handleStickMove, { passive: false });
+stickBase.addEventListener("touchend", handleStickEnd, { passive: false });
+stickBase.addEventListener("touchcancel", handleStickEnd, { passive: false });
+
+addEventListener("blur", () => {
+  resetStick();
+  boostHeld = false;
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    resetStick();
+    boostHeld = false;
+  }
+});
+
+document.addEventListener("touchmove", (event) => {
+  if (playing && isMobilePerformanceMode()) {
+    event.preventDefault();
+  }
+}, { passive: false });
 
 setInterval(() => {
   const player = me();
   if (!player || !player.alive || !playing) return;
 
+  const mobile = isMobilePerformanceMode();
+
   if (touchVector) {
     target.x = player.x + touchVector.x * 440;
     target.y = player.y + touchVector.y * 440;
+  } else if (mobile) {
+    target.x = player.x;
+    target.y = player.y;
   } else {
     const world = screenToWorld(mouse.x, mouse.y);
     target.x = world.x;
@@ -337,16 +497,17 @@ function draw() {
     lastMobileDraw = now;
   }
 
+  const quality = getRenderQuality();
+
   const player = me() ? renderPlayer(me()) : null;
   if (player) {
-    const mobile = isMobilePerformanceMode();
     const outerRadius = player.drones > 1 ? droneDistance(player, player.drones - 1) + 70 : 130;
 
-    const targetScreenRadius = mobile
+    const targetScreenRadius = quality.mobile
       ? clamp(Math.min(innerWidth, innerHeight) * 0.19, 80, 130)
       : clamp(Math.min(innerWidth, innerHeight) * 0.28, 150, 260);
 
-    const desiredZoom = mobile
+    const desiredZoom = quality.mobile
       ? clamp(targetScreenRadius / outerRadius, 0.04, 0.72)
       : clamp(targetScreenRadius / outerRadius, 0.055, 0.95);
 
@@ -364,18 +525,18 @@ function draw() {
   }
 
   ctx.clearRect(0, 0, innerWidth, innerHeight);
-  drawBackground();
+  drawBackground(quality);
   drawArena();
-  drawShards();
-  drawPlayers();
-  drawPlayerPings();
-  if (!isMobilePerformanceMode()) {
+  drawShards(quality);
+  drawPlayers(quality);
+  drawPlayerPings(quality);
+  if (quality.drawMinimap) {
     drawMinimap();
   }
   drawVignette();
 }
 
-function drawBackground() {
+function drawBackground(quality) {
   const gradient = ctx.createRadialGradient(innerWidth / 2, innerHeight / 2, 0, innerWidth / 2, innerHeight / 2, Math.max(innerWidth, innerHeight));
   gradient.addColorStop(0, "#101827");
   gradient.addColorStop(0.55, "#080b14");
@@ -383,7 +544,7 @@ function drawBackground() {
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, innerWidth, innerHeight);
 
-  if (isMobilePerformanceMode()) {
+  if (!quality.drawStars) {
     return;
   }
 
@@ -472,20 +633,19 @@ function drawAsteroids() {
   ctx.restore();
 }
 
-function drawShards() {
+function drawShards(quality) {
   ctx.save();
-  const mobile = isMobilePerformanceMode();
-  ctx.globalCompositeOperation = mobile ? "source-over" : "lighter";
+  ctx.globalCompositeOperation = quality.useGlow ? "lighter" : "source-over";
   let drawn = 0;
 
   for (const shard of state.shards) {
-    if (mobile && drawn > 140) break;
+    if (drawn >= quality.shardBudget) break;
     const p = worldToScreen(shard.x, shard.y);
     if (p.x < -20 || p.y < -20 || p.x > innerWidth + 20 || p.y > innerHeight + 20) continue;
     const isDroneLoot = shard.kind === "drone";
     const lootScale = isDroneLoot ? Math.min(2.1, 1 + Math.log10(Math.max(1, shard.value / 10)) * 0.34) : 1;
     const r = (isDroneLoot ? 10 * lootScale : shard.rare ? 8 : 5) * camera.zoom;
-    ctx.shadowBlur = mobile ? 0 : isDroneLoot ? 22 : shard.rare ? 18 : 10;
+    ctx.shadowBlur = quality.useGlow ? (isDroneLoot ? 22 : shard.rare ? 18 : 10) : 0;
     ctx.shadowColor = isDroneLoot ? "#ffb84d" : shard.rare ? "#ffe66d" : "#59f3ff";
     ctx.fillStyle = isDroneLoot ? "#ffb84d" : shard.rare ? "#ffe66d" : "#59f3ff";
     ctx.beginPath();
@@ -504,53 +664,40 @@ function drawShards() {
   ctx.restore();
 }
 
-function drawPlayers() {
+function drawPlayers(quality) {
   const selfRaw = me();
-  const self = selfRaw ? renderPlayer(selfRaw) : null;
-  const mobile = isMobilePerformanceMode();
+  const self = selfRaw && selfRaw.alive ? renderPlayer(selfRaw) : null;
 
-  let ordered = [...state.players].filter((player) => player.alive);
-
-  if (mobile && self) {
-    const selfEntry = ordered.find((player) => player.id === myId);
-
-    const nearbyOthers = ordered
-      .filter((player) => player.id !== myId)
-      .map((player) => {
-        const dx = player.x - self.x;
-        const dy = player.y - self.y;
-
-        return {
-          player,
-          distance: Math.hypot(dx, dy)
-        };
-      })
-      .filter((entry) => entry.distance < 2600 || entry.player.bountyRank)
-      .sort((a, b) => {
-        if (a.player.bountyRank && !b.player.bountyRank) return -1;
-        if (!a.player.bountyRank && b.player.bountyRank) return 1;
-        return a.distance - b.distance;
-      })
-      .slice(0, 17)
-      .map((entry) => entry.player);
-
-    ordered = selfEntry
-      ? [...nearbyOthers, selfEntry]
-      : nearbyOthers;
-  } else {
-    ordered.sort((a, b) => {
-      if (a.id === myId) return 1;
-      if (b.id === myId) return -1;
-      return 0;
+  const others = state.players
+    .filter((player) => player.alive && player.id !== myId)
+    .map((player) => {
+      const rendered = renderPlayer(player);
+      const dx = self ? rendered.x - self.x : 0;
+      const dy = self ? rendered.y - self.y : 0;
+      return {
+        player: rendered,
+        distance: Math.hypot(dx, dy)
+      };
+    })
+    .sort((a, b) => {
+      if (a.player.bountyRank && !b.player.bountyRank) return -1;
+      if (!a.player.bountyRank && b.player.bountyRank) return 1;
+      return a.distance - b.distance;
     });
+
+  const maxOthers = self ? Math.max(0, quality.maxPlayersDrawn - 1) : quality.maxPlayersDrawn;
+  for (const entry of others.slice(0, maxOthers)) {
+    drawPlayer(entry.player, quality);
   }
 
-  for (const player of ordered) {
-    drawPlayer(renderPlayer(player));
+  if (self) {
+    drawPlayer(self, quality);
   }
 }
 
-function drawPlayerPings() {
+function drawPlayerPings(quality) {
+  if (!quality.drawPings) return;
+
   const self = me() ? renderPlayer(me()) : null;
   if (!self || !self.alive) return;
 
@@ -709,7 +856,7 @@ function droneAngle(player, index) {
   return orbit + (position / Math.min(ringSize, count - layer * ringSize)) * Math.PI * 2 + layer * 0.19;
 }
 
-function drawPlayer(player) {
+function drawPlayer(player, quality) {
   const core = worldToScreen(player.x, player.y);
   const isMe = player.id === myId;
   const palette = playerPalette(player);
@@ -745,19 +892,25 @@ function drawPlayer(player) {
     ctx.stroke();
   }
 
-  drawSwarmMass(player, core, color, isMe);
+  const outerScreenRadius = (player.drones > 1 ? droneDistance(player, player.drones - 1) + 180 : 220) * camera.zoom;
+  if (!isMe) {
+    const offscreen =
+      core.x + outerScreenRadius < 0 ||
+      core.y + outerScreenRadius < 0 ||
+      core.x - outerScreenRadius > innerWidth ||
+      core.y - outerScreenRadius > innerHeight;
+    if (offscreen) {
+      ctx.restore();
+      return;
+    }
+  }
 
-  const mobile = isMobilePerformanceMode();
-  const maxDots = mobile
-    ? Math.min(player.drones, isMe ? 160 : 70)
-    : player.drones <= 420
-      ? player.drones
-      : isMe
-        ? 900
-        : 260;
+  drawSwarmMass(player, core, color, isMe, quality);
+
+  const maxDots = Math.min(player.drones, isMe ? quality.selfDotBudget : quality.otherDotBudget);
 
   const stride = Math.max(1, Math.floor(player.drones / Math.max(1, maxDots)));
-  ctx.shadowBlur = mobile ? 0 : player.drones > 420 ? 9 : 16;
+  ctx.shadowBlur = quality.useGlow ? (player.drones > 420 ? 9 : 16) : 0;
 
   for (let i = 0; i < player.drones; i += stride) {
     const dotColor = droneColor(player, i);
@@ -767,7 +920,7 @@ function drawPlayer(player) {
       player.x + Math.cos(angle) * distance,
       player.y + Math.sin(angle) * distance
     );
-    ctx.shadowBlur = mobile ? 0 : 16;
+    ctx.shadowBlur = quality.useGlow ? 16 : 0;
     ctx.shadowColor = dotColor;
     ctx.fillStyle = dotColor;
     ctx.beginPath();
@@ -775,7 +928,7 @@ function drawPlayer(player) {
     ctx.fill();
   }
 
-  drawWeakSpots(player);
+  drawWeakSpots(player, quality);
 
   if (player.pulse > 0) {
     const radius = Math.max(0, 240 * (1 - clamp(player.pulse / 0.32, 0, 1))) * camera.zoom;
@@ -792,7 +945,7 @@ function drawPlayer(player) {
   coreGradient.addColorStop(0.36, color);
   coreGradient.addColorStop(1, "rgba(0, 0, 0, 0)");
   ctx.fillStyle = coreGradient;
-  ctx.shadowBlur = 24;
+  ctx.shadowBlur = quality.useGlow ? 24 : 0;
   ctx.shadowColor = color;
   ctx.beginPath();
   ctx.arc(core.x, core.y, (31 + coreFlash * 16) * camera.zoom, 0, Math.PI * 2);
@@ -813,11 +966,12 @@ function drawPlayer(player) {
   ctx.restore();
 }
 
-function drawSwarmMass(player, core, color, isMe) {
+function drawSwarmMass(player, core, color, isMe, quality) {
   if (player.drones <= 420) return;
 
   const maxDistance = Math.max(1, droneDistance(player, player.drones - 1) * camera.zoom);
   const palette = playerPalette(player);
+  const alphaScale = quality.useGlow ? 1 : 0.55;
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
   ctx.shadowBlur = 0;
@@ -827,7 +981,7 @@ function drawSwarmMass(player, core, color, isMe) {
     ctx.lineWidth = Math.max(5, 10 * camera.zoom);
     for (let arm = 0; arm < arms; arm++) {
       const a = (player.orbit || 0) + arm * Math.PI * 2 / arms;
-      ctx.strokeStyle = hexToRgba(palette[arm % palette.length], isMe ? 0.34 : 0.23);
+      ctx.strokeStyle = hexToRgba(palette[arm % palette.length], (isMe ? 0.34 : 0.23) * alphaScale);
       ctx.beginPath();
       ctx.moveTo(core.x + Math.cos(a) * 54 * camera.zoom, core.y + Math.sin(a) * 54 * camera.zoom);
       ctx.lineTo(core.x + Math.cos(a) * maxDistance, core.y + Math.sin(a) * maxDistance);
@@ -839,9 +993,9 @@ function drawSwarmMass(player, core, color, isMe) {
 
   if (player.style === "cloud") {
     const glow = ctx.createRadialGradient(core.x, core.y, 20 * camera.zoom, core.x, core.y, maxDistance);
-    glow.addColorStop(0, hexToRgba(palette[0], 0.2));
-    glow.addColorStop(0.45, hexToRgba(palette[1 % palette.length], isMe ? 0.18 : 0.12));
-    glow.addColorStop(0.78, hexToRgba(palette[2 % palette.length], isMe ? 0.11 : 0.08));
+    glow.addColorStop(0, hexToRgba(palette[0], 0.2 * alphaScale));
+    glow.addColorStop(0.45, hexToRgba(palette[1 % palette.length], (isMe ? 0.18 : 0.12) * alphaScale));
+    glow.addColorStop(0.78, hexToRgba(palette[2 % palette.length], (isMe ? 0.11 : 0.08) * alphaScale));
     glow.addColorStop(1, hexToRgba(palette[0], 0));
     ctx.fillStyle = glow;
     ctx.beginPath();
@@ -851,12 +1005,11 @@ function drawSwarmMass(player, core, color, isMe) {
     return;
   }
 
-  const mobile = isMobilePerformanceMode();
-  const bands = mobile ? 6 : Math.min(26, Math.max(8, Math.floor(Math.sqrt(player.drones) / 5)));
+  const bands = quality.swarmBands;
   ctx.lineWidth = Math.max(1.2, 2.2 * camera.zoom);
   for (let i = 1; i <= bands; i++) {
     const r = (54 + (i / bands) * (58 + Math.sqrt(player.drones) * 31)) * camera.zoom;
-    ctx.strokeStyle = hexToRgba(palette[i % palette.length], 0.08 + i / bands * (isMe ? 0.18 : 0.12));
+    ctx.strokeStyle = hexToRgba(palette[i % palette.length], (0.08 + i / bands * (isMe ? 0.18 : 0.12)) * alphaScale);
     ctx.beginPath();
     ctx.arc(core.x, core.y, r, 0, Math.PI * 2);
     ctx.stroke();
@@ -864,7 +1017,7 @@ function drawSwarmMass(player, core, color, isMe) {
   ctx.restore();
 }
 
-function drawWeakSpots(player) {
+function drawWeakSpots(player, quality) {
   if (!Array.isArray(player.weakSpots) || !player.weakSpots.length) return;
 
   ctx.save();
@@ -887,7 +1040,7 @@ function drawWeakSpots(player) {
 
     const hpRatio = clamp(spot.hp / 3, 0, 1);
     const color = hpRatio > 0.66 ? "#ffe66d" : hpRatio > 0.33 ? "#ff8155" : "#ff4f70";
-    ctx.shadowBlur = isMobilePerformanceMode() ? 0 : 22;
+  ctx.shadowBlur = quality.useGlow ? 22 : 0;
     ctx.shadowColor = color;
     ctx.fillStyle = color;
     ctx.beginPath();
