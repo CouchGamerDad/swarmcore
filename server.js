@@ -10,7 +10,13 @@ const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
 const TICK_RATE = 24;
-const BROADCAST_RATE = 12;
+const BROADCAST_RATE = 6;
+const SOCKET_OVERHEAD_MULTIPLIER = 1.25;
+const FIVE_GB_BYTES = 5 * 1024 * 1024 * 1024;
+const BYTES_PER_KB = 1024;
+const BYTES_PER_MB = 1024 * 1024;
+const BYTES_PER_GB = 1024 * 1024 * 1024;
+const BANDWIDTH_LOG_INTERVAL_MS = 60000;
 const DT = 1 / TICK_RATE;
 const BASE_WORLD_RADIUS = 4200;
 const MAX_WORLD_RADIUS = 18000;
@@ -23,6 +29,7 @@ const BOT_COUNT = 50;
 const MAX_REAL_PLAYERS = 50;
 const COMBAT_DRONE_SAMPLE = 168;
 const SHARD_VIEW_RADIUS = 4200;
+const MAX_SHARDS_PER_CLIENT = 180;
 const STORM_INTERVAL = 120;
 const STORM_DURATION = 15;
 const DRONE_HIT_COOLDOWN = 700;
@@ -57,6 +64,23 @@ function createEmptyStats() {
     botKilledPlayer: 0,
     playerKilledPlayer: 0,
     botKilledBot: 0,
+    totalEstimatedBytesSent: 0,
+    totalEstimatedStateBytesSent: 0,
+    totalStateBroadcasts: 0,
+    totalStatePayloadBytes: 0,
+    totalStatePayloadSamples: 0,
+    lastStatePayloadBytes: 0,
+    averageStatePayloadBytes: 0,
+    peakStatePayloadBytes: 0,
+    minStatePayloadBytes: 0,
+    estimatedBytesPerSecond: 0,
+    estimatedMBPerHourPerPlayer: 0,
+    estimatedGBPerHourPerPlayer: 0,
+    estimatedHoursFor5GBAtCurrentLoad: 0,
+    estimatedHoursFor5GBAt1Player: 0,
+    estimatedHoursFor5GBAt5Players: 0,
+    estimatedHoursFor5GBAt10Players: 0,
+    estimatedHoursFor5GBAt25Players: 0,
     recentEvents: []
   };
 }
@@ -91,9 +115,30 @@ function normalizeLoadedStats(raw = {}) {
   normalized.botKilledPlayer = Number.isFinite(normalized.botKilledPlayer) ? normalized.botKilledPlayer : 0;
   normalized.playerKilledPlayer = Number.isFinite(normalized.playerKilledPlayer) ? normalized.playerKilledPlayer : 0;
   normalized.botKilledBot = Number.isFinite(normalized.botKilledBot) ? normalized.botKilledBot : 0;
+  normalized.totalEstimatedBytesSent = Number.isFinite(normalized.totalEstimatedBytesSent) ? normalized.totalEstimatedBytesSent : 0;
+  normalized.totalEstimatedStateBytesSent = Number.isFinite(normalized.totalEstimatedStateBytesSent) ? normalized.totalEstimatedStateBytesSent : 0;
+  normalized.totalStateBroadcasts = Number.isFinite(normalized.totalStateBroadcasts) ? normalized.totalStateBroadcasts : 0;
+  normalized.totalStatePayloadBytes = Number.isFinite(normalized.totalStatePayloadBytes) ? normalized.totalStatePayloadBytes : 0;
+  normalized.totalStatePayloadSamples = Number.isFinite(normalized.totalStatePayloadSamples) ? normalized.totalStatePayloadSamples : 0;
+  normalized.lastStatePayloadBytes = Number.isFinite(normalized.lastStatePayloadBytes) ? normalized.lastStatePayloadBytes : 0;
+  normalized.averageStatePayloadBytes = Number.isFinite(normalized.averageStatePayloadBytes) ? normalized.averageStatePayloadBytes : 0;
+  normalized.peakStatePayloadBytes = Number.isFinite(normalized.peakStatePayloadBytes) ? normalized.peakStatePayloadBytes : 0;
+  normalized.minStatePayloadBytes = Number.isFinite(normalized.minStatePayloadBytes) ? normalized.minStatePayloadBytes : 0;
+  normalized.estimatedBytesPerSecond = Number.isFinite(normalized.estimatedBytesPerSecond) ? normalized.estimatedBytesPerSecond : 0;
+  normalized.estimatedMBPerHourPerPlayer = Number.isFinite(normalized.estimatedMBPerHourPerPlayer) ? normalized.estimatedMBPerHourPerPlayer : 0;
+  normalized.estimatedGBPerHourPerPlayer = Number.isFinite(normalized.estimatedGBPerHourPerPlayer) ? normalized.estimatedGBPerHourPerPlayer : 0;
+  normalized.estimatedHoursFor5GBAtCurrentLoad = Number.isFinite(normalized.estimatedHoursFor5GBAtCurrentLoad) ? normalized.estimatedHoursFor5GBAtCurrentLoad : 0;
+  normalized.estimatedHoursFor5GBAt1Player = Number.isFinite(normalized.estimatedHoursFor5GBAt1Player) ? normalized.estimatedHoursFor5GBAt1Player : 0;
+  normalized.estimatedHoursFor5GBAt5Players = Number.isFinite(normalized.estimatedHoursFor5GBAt5Players) ? normalized.estimatedHoursFor5GBAt5Players : 0;
+  normalized.estimatedHoursFor5GBAt10Players = Number.isFinite(normalized.estimatedHoursFor5GBAt10Players) ? normalized.estimatedHoursFor5GBAt10Players : 0;
+  normalized.estimatedHoursFor5GBAt25Players = Number.isFinite(normalized.estimatedHoursFor5GBAt25Players) ? normalized.estimatedHoursFor5GBAt25Players : 0;
   normalized.recentEvents = Array.isArray(normalized.recentEvents)
     ? normalized.recentEvents.slice(-MAX_RECENT_EVENTS)
     : [];
+
+  if (!normalized.averageStatePayloadBytes && normalized.totalStatePayloadSamples > 0) {
+    normalized.averageStatePayloadBytes = Number((normalized.totalStatePayloadBytes / normalized.totalStatePayloadSamples).toFixed(2));
+  }
 
   return normalized;
 }
@@ -107,6 +152,26 @@ function loadStatsFromDisk() {
   } catch (error) {
     console.error("Analytics startup warning: unable to load swarmcore_stats.json", error.message);
   }
+}
+
+function resetBandwidthAnalytics() {
+  analytics.totalEstimatedBytesSent = 0;
+  analytics.totalEstimatedStateBytesSent = 0;
+  analytics.totalStateBroadcasts = 0;
+  analytics.totalStatePayloadBytes = 0;
+  analytics.totalStatePayloadSamples = 0;
+  analytics.lastStatePayloadBytes = 0;
+  analytics.averageStatePayloadBytes = 0;
+  analytics.peakStatePayloadBytes = 0;
+  analytics.minStatePayloadBytes = 0;
+  analytics.estimatedBytesPerSecond = 0;
+  analytics.estimatedMBPerHourPerPlayer = 0;
+  analytics.estimatedGBPerHourPerPlayer = 0;
+  analytics.estimatedHoursFor5GBAtCurrentLoad = 0;
+  analytics.estimatedHoursFor5GBAt1Player = 0;
+  analytics.estimatedHoursFor5GBAt5Players = 0;
+  analytics.estimatedHoursFor5GBAt10Players = 0;
+  analytics.estimatedHoursFor5GBAt25Players = 0;
 }
 
 function recalculateAverageSessionSeconds() {
@@ -191,6 +256,146 @@ function analyticsSnapshot() {
     botKilledBot: analytics.botKilledBot,
     recentEvents: analytics.recentEvents.slice(-MAX_RECENT_EVENTS)
   };
+}
+
+function roundMetric(value, decimals = 2) {
+  if (!Number.isFinite(value)) return 0;
+  return Number(value.toFixed(decimals));
+}
+
+function bytesToMB(bytes) {
+  return bytes / BYTES_PER_MB;
+}
+
+function bytesToGB(bytes) {
+  return bytes / BYTES_PER_GB;
+}
+
+function getConnectedSocketCount() {
+  return io.sockets.sockets.size;
+}
+
+function estimateUsageForSocketCount(socketCount, payloadBytes = analytics.averageStatePayloadBytes || analytics.lastStatePayloadBytes) {
+  if (!socketCount || !payloadBytes) {
+    return {
+      socketCount,
+      bytesPerSecond: 0,
+      mbPerHour: 0,
+      gbPerHour: 0,
+      hoursFor5GB: 0
+    };
+  }
+
+  const bytesPerSecond = payloadBytes * socketCount * SOCKET_OVERHEAD_MULTIPLIER * BROADCAST_RATE;
+  const bytesPerHour = bytesPerSecond * 3600;
+  const gbPerHour = bytesToGB(bytesPerHour);
+
+  return {
+    socketCount,
+    bytesPerSecond,
+    mbPerHour: bytesToMB(bytesPerHour),
+    gbPerHour,
+    hoursFor5GB: gbPerHour > 0 ? FIVE_GB_BYTES / bytesPerHour : 0
+  };
+}
+
+function refreshBandwidthEstimates() {
+  const current = estimateUsageForSocketCount(getConnectedSocketCount());
+  const onePlayer = estimateUsageForSocketCount(1);
+  const fivePlayers = estimateUsageForSocketCount(5);
+  const tenPlayers = estimateUsageForSocketCount(10);
+  const twentyFivePlayers = estimateUsageForSocketCount(25);
+
+  analytics.estimatedBytesPerSecond = roundMetric(current.bytesPerSecond, 2);
+  analytics.estimatedMBPerHourPerPlayer = roundMetric(onePlayer.mbPerHour, 3);
+  analytics.estimatedGBPerHourPerPlayer = roundMetric(onePlayer.gbPerHour, 4);
+  analytics.estimatedHoursFor5GBAtCurrentLoad = roundMetric(current.hoursFor5GB, 2);
+  analytics.estimatedHoursFor5GBAt1Player = roundMetric(onePlayer.hoursFor5GB, 2);
+  analytics.estimatedHoursFor5GBAt5Players = roundMetric(fivePlayers.hoursFor5GB, 2);
+  analytics.estimatedHoursFor5GBAt10Players = roundMetric(tenPlayers.hoursFor5GB, 2);
+  analytics.estimatedHoursFor5GBAt25Players = roundMetric(twentyFivePlayers.hoursFor5GB, 2);
+}
+
+function recordStatePayloadSample(payloadBytes) {
+  analytics.lastStatePayloadBytes = payloadBytes;
+  analytics.peakStatePayloadBytes = Math.max(analytics.peakStatePayloadBytes, payloadBytes);
+  analytics.minStatePayloadBytes = analytics.minStatePayloadBytes === 0
+    ? payloadBytes
+    : Math.min(analytics.minStatePayloadBytes, payloadBytes);
+  analytics.totalStatePayloadBytes += payloadBytes;
+  analytics.totalStatePayloadSamples += 1;
+  analytics.averageStatePayloadBytes = roundMetric(
+    analytics.totalStatePayloadBytes / analytics.totalStatePayloadSamples,
+    2
+  );
+}
+
+function createBandwidthSnapshot() {
+  const connectedSockets = getConnectedSocketCount();
+  const current = estimateUsageForSocketCount(connectedSockets);
+  const onePlayer = estimateUsageForSocketCount(1);
+  const fivePlayers = estimateUsageForSocketCount(5);
+  const tenPlayers = estimateUsageForSocketCount(10);
+  const twentyFivePlayers = estimateUsageForSocketCount(25);
+
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    broadcastRate: BROADCAST_RATE,
+    socketOverheadMultiplier: SOCKET_OVERHEAD_MULTIPLIER,
+    activePlayers: analytics.activePlayers,
+    totalSocketConnections: analytics.totalSocketConnections,
+    connectedSockets,
+    totalEstimatedBytesSent: Math.round(analytics.totalEstimatedBytesSent),
+    totalEstimatedStateBytesSent: Math.round(analytics.totalEstimatedStateBytesSent),
+    totalStateBroadcasts: analytics.totalStateBroadcasts,
+    minimumStatePayloadBytes: analytics.minStatePayloadBytes,
+    lastStatePayloadBytes: analytics.lastStatePayloadBytes,
+    averageStatePayloadBytes: analytics.averageStatePayloadBytes,
+    peakStatePayloadBytes: analytics.peakStatePayloadBytes,
+    estimatedBytesPerSecondCurrent: roundMetric(current.bytesPerSecond, 2),
+    estimatedMBPerHourCurrent: roundMetric(current.mbPerHour, 3),
+    estimatedGBPerHourCurrent: roundMetric(current.gbPerHour, 4),
+    estimatedHoursFor5GBCurrent: roundMetric(current.hoursFor5GB, 2),
+    estimates: {
+      onePlayer: {
+        mbPerHour: roundMetric(onePlayer.mbPerHour, 3),
+        gbPerHour: roundMetric(onePlayer.gbPerHour, 4),
+        hoursFor5GB: roundMetric(onePlayer.hoursFor5GB, 2)
+      },
+      fivePlayers: {
+        mbPerHour: roundMetric(fivePlayers.mbPerHour, 3),
+        gbPerHour: roundMetric(fivePlayers.gbPerHour, 4),
+        hoursFor5GB: roundMetric(fivePlayers.hoursFor5GB, 2)
+      },
+      tenPlayers: {
+        mbPerHour: roundMetric(tenPlayers.mbPerHour, 3),
+        gbPerHour: roundMetric(tenPlayers.gbPerHour, 4),
+        hoursFor5GB: roundMetric(tenPlayers.hoursFor5GB, 2)
+      },
+      twentyFivePlayers: {
+        mbPerHour: roundMetric(twentyFivePlayers.mbPerHour, 3),
+        gbPerHour: roundMetric(twentyFivePlayers.gbPerHour, 4),
+        hoursFor5GB: roundMetric(twentyFivePlayers.hoursFor5GB, 2)
+      }
+    },
+    notes: [
+      "These are estimates based on JSON payload size plus a Socket.IO overhead multiplier.",
+      "Render bandwidth may also include static assets, dashboard traffic, reconnects, and other outbound responses."
+    ]
+  };
+}
+
+function logBandwidthEstimate() {
+  const snapshot = createBandwidthSnapshot();
+  const averagePayloadKB = roundMetric(snapshot.averageStatePayloadBytes / BYTES_PER_KB, 1);
+
+  console.log("Bandwidth estimate:");
+  console.log(`Average state payload: ${averagePayloadKB} KB`);
+  console.log(`Broadcast rate: ${snapshot.broadcastRate} per second`);
+  console.log(`Connected sockets: ${snapshot.connectedSockets}`);
+  console.log(`Estimated current usage: ${snapshot.estimatedGBPerHourCurrent} GB per hour`);
+  console.log(`Estimated 5 GB life at current load: ${snapshot.estimatedHoursFor5GBCurrent} hours`);
 }
 
 function getStatsAccessError(req) {
@@ -1137,7 +1342,9 @@ function renderStatsLockedPage(title, message) {
 }
 
 loadStatsFromDisk();
+resetBandwidthAnalytics();
 recalculateAverageSessionSeconds();
+recalculateActivePlayers();
 
 setInterval(() => {
   flushStatsToDisk();
@@ -1159,6 +1366,19 @@ app.get("/admin/stats", (req, res) => {
     });
   }
   return res.json(analyticsSnapshot());
+});
+
+app.get("/admin/bandwidth", (req, res) => {
+  const authError = getStatsAccessError(req);
+  if (authError) {
+    return res.status(403).json({
+      ok: false,
+      code: authError.code,
+      message: authError.message
+    });
+  }
+
+  return res.json(createBandwidthSnapshot());
 });
 
 app.get("/admin/dashboard", (req, res) => {
@@ -2060,7 +2280,7 @@ function tick() {
   }
 }
 
-function publicPlayer(player) {
+function serializePlayerForClient(player) {
   const level = levelFor(player.drones);
   const now = Date.now();
   const tier = titanTier(player);
@@ -2074,11 +2294,8 @@ function publicPlayer(player) {
     angle: player.angle,
     orbit: player.orbit,
     color: player.color,
-    skin: player.skin,
     palette: player.palette || SKINS.cyan.palette,
     alive: player.alive,
-    energy: player.energy,
-    score: Math.floor(player.score),
     drones: player.drones,
     maxDrones: player.maxDrones,
     style: player.style,
@@ -2088,12 +2305,9 @@ function publicPlayer(player) {
     pulse: Math.max(0, player.pulseUntil - serverSeconds),
     pulseCooldown: clamp(pulseCooldownSeconds - (serverSeconds - player.lastPulse), 0, pulseCooldownSeconds),
     bountyRank: player.bountyRank,
-    isBot: player.isBot,
     titanTier: tier,
     exposed: player.exposedUntil > now,
-    exposedUntil: Math.max(0, player.exposedUntil - now),
     needleReady: player.drones < NEEDLE_DASH_MAX_DRONES && now >= player.needleCooldownUntil,
-    needleDash: now < player.needleDashUntil,
     needleCooldown: Math.max(0, player.needleCooldownUntil - now),
     weakSpots: tier === "normal" ? [] : weakSpotPositions(player, now).map((spot) => ({
       id: spot.id,
@@ -2107,28 +2321,31 @@ function publicPlayer(player) {
 }
 
 function broadcastState(nowSeconds) {
-  const playerPayload = [...players.values()].map(publicPlayer);
-  const leaderboard = playerPayload
-    .filter((p) => p.alive)
+  const playersSnapshot = [...players.values()];
+  const playerPayload = playersSnapshot.map(serializePlayerForClient);
+  const leaderboard = playersSnapshot
+    .filter((player) => player.alive)
     .sort((a, b) => b.score - a.score)
     .slice(0, 10)
-    .map((p, index) => ({
+    .map((player, index) => ({
       rank: index + 1,
-      id: p.id,
-      name: p.name,
-      score: p.score,
-      drones: p.drones,
-      maxDrones: p.maxDrones,
-      bountyRank: p.bountyRank
+      id: player.id,
+      name: player.name,
+      score: Math.floor(player.score),
+      drones: player.drones,
+      maxDrones: player.maxDrones,
+      bountyRank: player.bountyRank
     }));
 
   const basePayload = {
-    now: nowSeconds,
     worldRadius: Math.round(worldRadius),
     players: playerPayload,
     leaderboard,
     storm: stormState(nowSeconds)
   };
+
+  const connectedSockets = getConnectedSocketCount();
+  let broadcastBytes = 0;
 
   for (const socket of io.sockets.sockets.values()) {
     const viewer = players.get(socket.id);
@@ -2139,16 +2356,30 @@ function broadcastState(nowSeconds) {
       const dy = s.y - center.y;
       if (dx * dx + dy * dy > SHARD_VIEW_RADIUS * SHARD_VIEW_RADIUS && !s.rare) continue;
       shardPayload.push({
-        id: s.id,
         x: Math.round(s.x),
         y: Math.round(s.y),
         value: s.value,
         rare: s.rare,
         kind: s.kind
       });
-      if (shardPayload.length >= 360) break;
+      if (shardPayload.length >= MAX_SHARDS_PER_CLIENT) break;
     }
-    socket.volatile.emit("state", { ...basePayload, shards: shardPayload });
+    const payload = { ...basePayload, shards: shardPayload };
+    const payloadJson = JSON.stringify(payload);
+    const payloadBytes = Buffer.byteLength(payloadJson);
+    const estimatedBytes = payloadBytes * SOCKET_OVERHEAD_MULTIPLIER;
+
+    recordStatePayloadSample(payloadBytes);
+    broadcastBytes += estimatedBytes;
+    socket.volatile.emit("state", payload);
+  }
+
+  if (connectedSockets > 0) {
+    analytics.totalStateBroadcasts += 1;
+    analytics.totalEstimatedStateBytesSent += broadcastBytes;
+    analytics.totalEstimatedBytesSent += broadcastBytes;
+    refreshBandwidthEstimates();
+    markStatsDirty();
   }
 }
 
@@ -2267,7 +2498,9 @@ function createBots() {
 
 fillShards();
 createBots();
+refreshBandwidthEstimates();
 setInterval(tick, 1000 / TICK_RATE);
+setInterval(logBandwidthEstimate, BANDWIDTH_LOG_INTERVAL_MS);
 
 server.listen(PORT, () => {
   console.log(`SwarmCore.io running on port ${PORT}`);

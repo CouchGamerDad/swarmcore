@@ -1,4 +1,4 @@
-const socket = io();
+let socket = null;
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 const nativeArc = ctx.arc.bind(ctx);
@@ -128,41 +128,49 @@ function resize() {
 addEventListener("resize", resize);
 resize();
 
-socket.on("init", (payload) => {
-  myId = payload.id;
-  worldRadius = payload.worldRadius;
-  asteroids = payload.asteroids || [];
-});
+function connectSocketOnce() {
+  if (socket) return socket;
 
-socket.on("state", (payload) => {
-  if (payload.worldRadius) worldRadius = payload.worldRadius;
-  const receivedAt = performance.now();
-  for (const next of payload.players) {
-    const previous = playerRenderCache.get(next.id);
-    const visual = previous ? renderPlayer(previous.data) : next;
-    playerRenderCache.set(next.id, {
-      data: next,
-      from: visual,
-      receivedAt
-    });
-  }
-  for (const id of playerRenderCache.keys()) {
-    if (!payload.players.some((player) => player.id === id)) {
-      playerRenderCache.delete(id);
+  socket = io();
+
+  socket.on("init", (payload) => {
+    myId = payload.id;
+    worldRadius = payload.worldRadius;
+    asteroids = payload.asteroids || [];
+  });
+
+  socket.on("state", (payload) => {
+    if (payload.worldRadius) worldRadius = payload.worldRadius;
+    const receivedAt = performance.now();
+    for (const next of payload.players) {
+      const previous = playerRenderCache.get(next.id);
+      const visual = previous ? renderPlayer(previous.data) : next;
+      playerRenderCache.set(next.id, {
+        data: next,
+        from: visual,
+        receivedAt
+      });
     }
-  }
-  state = payload;
-  updateHud();
-});
+    for (const id of playerRenderCache.keys()) {
+      if (!payload.players.some((player) => player.id === id)) {
+        playerRenderCache.delete(id);
+      }
+    }
+    state = payload;
+    updateHud();
+  });
 
-socket.on("serverFull", (payload = {}) => {
-  const brand = startPanel.querySelector(".brand");
-  if (brand) brand.textContent = "Arena full";
-  nameInput.placeholder = `${payload.maxPlayers || 50} players already in`;
-  nameInput.disabled = true;
-  playButton.textContent = "Try again soon";
-  playButton.disabled = true;
-});
+  socket.on("serverFull", (payload = {}) => {
+    const brand = startPanel.querySelector(".brand");
+    if (brand) brand.textContent = "Arena full";
+    nameInput.placeholder = `${payload.maxPlayers || 50} players already in`;
+    nameInput.disabled = true;
+    playButton.textContent = "Try again soon";
+    playButton.disabled = true;
+  });
+
+  return socket;
+}
 
 function me() {
   return state.players.find((p) => p.id === myId);
@@ -343,12 +351,14 @@ playButton.addEventListener("click", () => {
   playing = true;
   cameraLockedToPlayer = false;
   startPanel.classList.add("hidden");
-  socket.emit("hello", { name: nameInput.value, skin: selectedSkin });
+  const currentSocket = connectSocketOnce();
+  currentSocket.emit("hello", { name: nameInput.value, skin: selectedSkin });
 });
 
 respawnButton.addEventListener("click", () => {
   cameraLockedToPlayer = false;
-  socket.emit("respawn", { name: nameInput.value, skin: selectedSkin });
+  const currentSocket = connectSocketOnce();
+  currentSocket.emit("respawn", { name: nameInput.value, skin: selectedSkin });
 });
 
 nameInput.addEventListener("keydown", (event) => {
@@ -357,7 +367,7 @@ nameInput.addEventListener("keydown", (event) => {
 
 for (const button of stylePanel.querySelectorAll("button")) {
   button.addEventListener("click", () => {
-    socket.emit("style", button.dataset.style);
+    if (socket) socket.emit("style", button.dataset.style);
     stylePanel.classList.add("hidden");
   });
 }
@@ -391,7 +401,7 @@ addEventListener("mouseup", (event) => {
 addEventListener("keydown", (event) => {
   if (event.code === "Space") {
     event.preventDefault();
-    socket.emit("pulse");
+    if (socket) socket.emit("pulse");
   }
 });
 
@@ -415,7 +425,7 @@ mobileBoost.addEventListener("touchcancel", (event) => {
 mobilePulse.addEventListener("touchstart", (event) => {
   event.preventDefault();
   event.stopPropagation();
-  socket.emit("pulse");
+  if (socket) socket.emit("pulse");
 }, { passive: false });
 
 function resetStick() {
@@ -523,6 +533,8 @@ document.addEventListener("touchmove", (event) => {
 }, { passive: false });
 
 setInterval(() => {
+  if (!socket) return;
+
   const player = me();
   if (!player || !player.alive || !playing) return;
 
