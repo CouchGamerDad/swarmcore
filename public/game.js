@@ -29,7 +29,11 @@ let dpr = 1;
 let myId = null;
 let worldRadius = 2400;
 let asteroids = [];
-let state = { players: [], shards: [], leaderboard: [], storm: { active: false } };
+const SERVER_STATE_RATE = 6;
+const STATE_INTERVAL_MS = 1000 / SERVER_STATE_RATE;
+const INTERPOLATION_DELAY_MS = STATE_INTERVAL_MS * 1.15;
+const DEFAULT_STORM = { active: false, nextIn: 0, endsIn: 0, progress: 0 };
+let state = { players: [], shards: [], leaderboard: [], storm: { ...DEFAULT_STORM } };
 const playerRenderCache = new Map();
 let camera = { x: 0, y: 0, zoom: 1 };
 let cameraLockedToPlayer = false;
@@ -141,8 +145,9 @@ function connectSocketOnce() {
 
   socket.on("state", (payload) => {
     if (payload.worldRadius) worldRadius = payload.worldRadius;
+    const nextPlayers = Array.isArray(payload.players) ? payload.players : [];
     const receivedAt = performance.now();
-    for (const next of payload.players) {
+    for (const next of nextPlayers) {
       const previous = playerRenderCache.get(next.id);
       const visual = previous ? renderPlayer(previous.data) : next;
       playerRenderCache.set(next.id, {
@@ -152,11 +157,28 @@ function connectSocketOnce() {
       });
     }
     for (const id of playerRenderCache.keys()) {
-      if (!payload.players.some((player) => player.id === id)) {
+      if (!nextPlayers.some((player) => player.id === id)) {
         playerRenderCache.delete(id);
       }
     }
-    state = payload;
+    state = {
+      ...state,
+      ...payload,
+      players: nextPlayers,
+      shards: Array.isArray(payload.shards) ? payload.shards : []
+    };
+    updateHud();
+  });
+
+  socket.on("leaderboard", (payload) => {
+    state.leaderboard = Array.isArray(payload) ? payload : [];
+    updateHud();
+  });
+
+  socket.on("storm", (payload) => {
+    state.storm = payload && typeof payload === "object"
+      ? { ...DEFAULT_STORM, ...payload }
+      : { ...DEFAULT_STORM };
     updateHud();
   });
 
@@ -248,7 +270,9 @@ function canPlayerSwarmThreatenSelf(player, self, quality) {
 }
 
 function shouldConsiderPlayerForRender(player, self, quality) {
-  if (!player || !player.alive) return false;
+  if (!player) return false;
+  if (player.threatOnly) return true;
+  if (!player.alive) return false;
   if (player.id === myId) return true;
 
   if (isPlayerCoreNearViewport(player, quality)) return true;
@@ -284,14 +308,30 @@ function lerpAngle(a, b, t) {
 function renderPlayer(player) {
   const cached = playerRenderCache.get(player.id);
   if (!cached) return player;
-  const t = clamp((performance.now() - cached.receivedAt) / 85, 0, 1);
+  const now = performance.now();
+  const t = clamp((now - cached.receivedAt) / INTERPOLATION_DELAY_MS, 0, 1);
   const level = player.level || levelFor(player.drones);
   const orbitSpeed = (level >= 6 ? 2.9 : 2.15) + Math.min(player.drones, 45) * 0.012;
-  const elapsed = Math.max(0, performance.now() - cached.receivedAt) / 1000;
+  const elapsed = Math.max(0, now - cached.receivedAt) / 1000;
+  let x = lerp(cached.from.x, player.x, t);
+  let y = lerp(cached.from.y, player.y, t);
+
+  if (player.id !== myId && t >= 1) {
+    const overtime = Math.max(0, now - cached.receivedAt - INTERPOLATION_DELAY_MS);
+    const extrapolateSeconds = clamp(overtime / 1000, 0, 0.08);
+    const intervalSeconds = INTERPOLATION_DELAY_MS / 1000;
+    if (intervalSeconds > 0) {
+      const velocityX = (player.x - cached.from.x) / intervalSeconds;
+      const velocityY = (player.y - cached.from.y) / intervalSeconds;
+      x += velocityX * extrapolateSeconds;
+      y += velocityY * extrapolateSeconds;
+    }
+  }
+
   return {
     ...player,
-    x: lerp(cached.from.x, player.x, t),
-    y: lerp(cached.from.y, player.y, t),
+    x,
+    y,
     angle: lerpAngle(cached.from.angle || 0, player.angle || 0, t),
     orbit: lerpAngle(cached.from.orbit || 0, player.orbit || 0, t) + orbitSpeed * elapsed
   };
@@ -305,6 +345,7 @@ function levelFor(drones) {
 function updateHud() {
   const player = me();
   if (!player) return;
+  const storm = state.storm || DEFAULT_STORM;
   deadPanel.classList.toggle("hidden", player.alive || !playing);
   levelStat.textContent = player.level;
   droneStat.textContent = player.maxDrones && player.maxDrones > player.drones ? `${player.drones}/${player.maxDrones}` : player.drones;
@@ -330,10 +371,10 @@ function updateHud() {
     leaderboardEl.appendChild(li);
   }
 
-  if (state.storm.active) {
-    stormText.textContent = `Reactor storm active: ${state.storm.endsIn}s`;
+  if (storm.active) {
+    stormText.textContent = `Reactor storm active: ${storm.endsIn}s`;
   } else {
-    stormText.textContent = `Reactor storm in ${state.storm.nextIn}s`;
+    stormText.textContent = `Reactor storm in ${storm.nextIn}s`;
   }
 }
 
@@ -597,8 +638,8 @@ function draw() {
     } else {
       const zoomEase = desiredZoom < camera.zoom ? 0.07 : 0.04;
       camera.zoom += (desiredZoom - camera.zoom) * zoomEase;
-      camera.x += (player.x - camera.x) * 0.14;
-      camera.y += (player.y - camera.y) * 0.14;
+      camera.x += (player.x - camera.x) * 0.10;
+      camera.y += (player.y - camera.y) * 0.10;
     }
   }
 
@@ -968,11 +1009,17 @@ function drawOffscreenSwarmThreat(player, quality) {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  const maxDots = quality.mobile
-    ? 72
-    : quality.heavyScene
-      ? 110
-      : 150;
+  const maxDots = player.threatOnly
+    ? quality.mobile
+      ? 24
+      : quality.heavyScene
+        ? 36
+        : 52
+    : quality.mobile
+      ? 72
+      : quality.heavyScene
+        ? 110
+        : 150;
 
   const count = Math.max(1, player.drones || 1);
   const stride = Math.max(1, Math.floor(count / maxDots));
@@ -1018,6 +1065,12 @@ function drawOffscreenSwarmThreat(player, quality) {
 function drawPlayer(player, quality) {
   const core = worldToScreen(player.x, player.y);
   const isMe = player.id === myId;
+
+  if (!isMe && player.threatOnly) {
+    drawOffscreenSwarmThreat(player, quality);
+    return;
+  }
+
   const palette = playerPalette(player);
   const color = player.color || palette[0];
 

@@ -29,7 +29,12 @@ const BOT_COUNT = 50;
 const MAX_REAL_PLAYERS = 50;
 const COMBAT_DRONE_SAMPLE = 168;
 const SHARD_VIEW_RADIUS = 4200;
-const MAX_SHARDS_PER_CLIENT = 180;
+const MAX_SHARDS_PER_CLIENT = 90;
+const FULL_PLAYER_VIEW_RADIUS = 2400;
+const FULL_PLAYER_VIEW_RADIUS_HEAVY = 1800;
+const THREAT_MARGIN = 900;
+const MAX_FULL_PLAYERS_PER_CLIENT = 12;
+const MAX_THREAT_PLAYERS_PER_CLIENT = 12;
 const STORM_INTERVAL = 120;
 const STORM_DURATION = 15;
 const DRONE_HIT_COOLDOWN = 700;
@@ -81,6 +86,21 @@ function createEmptyStats() {
     estimatedHoursFor5GBAt5Players: 0,
     estimatedHoursFor5GBAt10Players: 0,
     estimatedHoursFor5GBAt25Players: 0,
+    totalPlayersSent: 0,
+    totalFullPlayersSent: 0,
+    totalThreatPlayersSent: 0,
+    totalShardsSent: 0,
+    lastPlayersSent: 0,
+    lastFullPlayersSent: 0,
+    lastThreatPlayersSent: 0,
+    lastShardsSent: 0,
+    averagePlayersSent: 0,
+    averageFullPlayersSent: 0,
+    averageThreatPlayersSent: 0,
+    averageShardsSent: 0,
+    lastLeaderboardBytes: 0,
+    lastStormBytes: 0,
+    lastViewerId: null,
     recentEvents: []
   };
 }
@@ -132,6 +152,21 @@ function normalizeLoadedStats(raw = {}) {
   normalized.estimatedHoursFor5GBAt5Players = Number.isFinite(normalized.estimatedHoursFor5GBAt5Players) ? normalized.estimatedHoursFor5GBAt5Players : 0;
   normalized.estimatedHoursFor5GBAt10Players = Number.isFinite(normalized.estimatedHoursFor5GBAt10Players) ? normalized.estimatedHoursFor5GBAt10Players : 0;
   normalized.estimatedHoursFor5GBAt25Players = Number.isFinite(normalized.estimatedHoursFor5GBAt25Players) ? normalized.estimatedHoursFor5GBAt25Players : 0;
+  normalized.totalPlayersSent = Number.isFinite(normalized.totalPlayersSent) ? normalized.totalPlayersSent : 0;
+  normalized.totalFullPlayersSent = Number.isFinite(normalized.totalFullPlayersSent) ? normalized.totalFullPlayersSent : 0;
+  normalized.totalThreatPlayersSent = Number.isFinite(normalized.totalThreatPlayersSent) ? normalized.totalThreatPlayersSent : 0;
+  normalized.totalShardsSent = Number.isFinite(normalized.totalShardsSent) ? normalized.totalShardsSent : 0;
+  normalized.lastPlayersSent = Number.isFinite(normalized.lastPlayersSent) ? normalized.lastPlayersSent : 0;
+  normalized.lastFullPlayersSent = Number.isFinite(normalized.lastFullPlayersSent) ? normalized.lastFullPlayersSent : 0;
+  normalized.lastThreatPlayersSent = Number.isFinite(normalized.lastThreatPlayersSent) ? normalized.lastThreatPlayersSent : 0;
+  normalized.lastShardsSent = Number.isFinite(normalized.lastShardsSent) ? normalized.lastShardsSent : 0;
+  normalized.averagePlayersSent = Number.isFinite(normalized.averagePlayersSent) ? normalized.averagePlayersSent : 0;
+  normalized.averageFullPlayersSent = Number.isFinite(normalized.averageFullPlayersSent) ? normalized.averageFullPlayersSent : 0;
+  normalized.averageThreatPlayersSent = Number.isFinite(normalized.averageThreatPlayersSent) ? normalized.averageThreatPlayersSent : 0;
+  normalized.averageShardsSent = Number.isFinite(normalized.averageShardsSent) ? normalized.averageShardsSent : 0;
+  normalized.lastLeaderboardBytes = Number.isFinite(normalized.lastLeaderboardBytes) ? normalized.lastLeaderboardBytes : 0;
+  normalized.lastStormBytes = Number.isFinite(normalized.lastStormBytes) ? normalized.lastStormBytes : 0;
+  normalized.lastViewerId = typeof normalized.lastViewerId === "string" ? normalized.lastViewerId : null;
   normalized.recentEvents = Array.isArray(normalized.recentEvents)
     ? normalized.recentEvents.slice(-MAX_RECENT_EVENTS)
     : [];
@@ -172,6 +207,21 @@ function resetBandwidthAnalytics() {
   analytics.estimatedHoursFor5GBAt5Players = 0;
   analytics.estimatedHoursFor5GBAt10Players = 0;
   analytics.estimatedHoursFor5GBAt25Players = 0;
+  analytics.totalPlayersSent = 0;
+  analytics.totalFullPlayersSent = 0;
+  analytics.totalThreatPlayersSent = 0;
+  analytics.totalShardsSent = 0;
+  analytics.lastPlayersSent = 0;
+  analytics.lastFullPlayersSent = 0;
+  analytics.lastThreatPlayersSent = 0;
+  analytics.lastShardsSent = 0;
+  analytics.averagePlayersSent = 0;
+  analytics.averageFullPlayersSent = 0;
+  analytics.averageThreatPlayersSent = 0;
+  analytics.averageShardsSent = 0;
+  analytics.lastLeaderboardBytes = 0;
+  analytics.lastStormBytes = 0;
+  analytics.lastViewerId = null;
 }
 
 function recalculateAverageSessionSeconds() {
@@ -275,6 +325,13 @@ function getConnectedSocketCount() {
   return io.sockets.sockets.size;
 }
 
+function recordEstimatedPayloadBytes(payloadBytes, recipientCount = 1, includeState = false) {
+  const estimatedBytes = payloadBytes * recipientCount * SOCKET_OVERHEAD_MULTIPLIER;
+  analytics.totalEstimatedBytesSent += estimatedBytes;
+  if (includeState) analytics.totalEstimatedStateBytesSent += estimatedBytes;
+  return estimatedBytes;
+}
+
 function estimateUsageForSocketCount(socketCount, payloadBytes = analytics.averageStatePayloadBytes || analytics.lastStatePayloadBytes) {
   if (!socketCount || !payloadBytes) {
     return {
@@ -316,7 +373,7 @@ function refreshBandwidthEstimates() {
   analytics.estimatedHoursFor5GBAt25Players = roundMetric(twentyFivePlayers.hoursFor5GB, 2);
 }
 
-function recordStatePayloadSample(payloadBytes) {
+function recordStatePayloadSample(payloadBytes, breakdown = {}) {
   analytics.lastStatePayloadBytes = payloadBytes;
   analytics.peakStatePayloadBytes = Math.max(analytics.peakStatePayloadBytes, payloadBytes);
   analytics.minStatePayloadBytes = analytics.minStatePayloadBytes === 0
@@ -328,6 +385,22 @@ function recordStatePayloadSample(payloadBytes) {
     analytics.totalStatePayloadBytes / analytics.totalStatePayloadSamples,
     2
   );
+
+  analytics.lastPlayersSent = breakdown.playersSent || 0;
+  analytics.lastFullPlayersSent = breakdown.fullPlayersSent || 0;
+  analytics.lastThreatPlayersSent = breakdown.threatPlayersSent || 0;
+  analytics.lastShardsSent = breakdown.shardsSent || 0;
+  analytics.lastViewerId = typeof breakdown.viewerId === "string" ? breakdown.viewerId : null;
+
+  analytics.totalPlayersSent += analytics.lastPlayersSent;
+  analytics.totalFullPlayersSent += analytics.lastFullPlayersSent;
+  analytics.totalThreatPlayersSent += analytics.lastThreatPlayersSent;
+  analytics.totalShardsSent += analytics.lastShardsSent;
+
+  analytics.averagePlayersSent = roundMetric(analytics.totalPlayersSent / analytics.totalStatePayloadSamples, 2);
+  analytics.averageFullPlayersSent = roundMetric(analytics.totalFullPlayersSent / analytics.totalStatePayloadSamples, 2);
+  analytics.averageThreatPlayersSent = roundMetric(analytics.totalThreatPlayersSent / analytics.totalStatePayloadSamples, 2);
+  analytics.averageShardsSent = roundMetric(analytics.totalShardsSent / analytics.totalStatePayloadSamples, 2);
 }
 
 function createBandwidthSnapshot() {
@@ -349,10 +422,22 @@ function createBandwidthSnapshot() {
     totalEstimatedBytesSent: Math.round(analytics.totalEstimatedBytesSent),
     totalEstimatedStateBytesSent: Math.round(analytics.totalEstimatedStateBytesSent),
     totalStateBroadcasts: analytics.totalStateBroadcasts,
+    lastPayloadBytes: analytics.lastStatePayloadBytes,
+    averagePayloadBytes: analytics.averageStatePayloadBytes,
     minimumStatePayloadBytes: analytics.minStatePayloadBytes,
     lastStatePayloadBytes: analytics.lastStatePayloadBytes,
     averageStatePayloadBytes: analytics.averageStatePayloadBytes,
     peakStatePayloadBytes: analytics.peakStatePayloadBytes,
+    averagePlayersSent: analytics.averagePlayersSent,
+    averageFullPlayersSent: analytics.averageFullPlayersSent,
+    averageThreatPlayersSent: analytics.averageThreatPlayersSent,
+    averageShardsSent: analytics.averageShardsSent,
+    lastPlayersSent: analytics.lastPlayersSent,
+    lastFullPlayersSent: analytics.lastFullPlayersSent,
+    lastThreatPlayersSent: analytics.lastThreatPlayersSent,
+    lastShardsSent: analytics.lastShardsSent,
+    lastLeaderboardBytes: analytics.lastLeaderboardBytes,
+    lastStormBytes: analytics.lastStormBytes,
     estimatedBytesPerSecondCurrent: roundMetric(current.bytesPerSecond, 2),
     estimatedMBPerHourCurrent: roundMetric(current.mbPerHour, 3),
     estimatedGBPerHourCurrent: roundMetric(current.gbPerHour, 4),
@@ -386,16 +471,84 @@ function createBandwidthSnapshot() {
   };
 }
 
+function createDebugPayloadSnapshot() {
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    connectedSockets: getConnectedSocketCount(),
+    activePlayers: analytics.activePlayers,
+    lastPayloadBytes: analytics.lastStatePayloadBytes,
+    lastPlayersSent: analytics.lastPlayersSent,
+    lastFullPlayersSent: analytics.lastFullPlayersSent,
+    lastThreatPlayersSent: analytics.lastThreatPlayersSent,
+    lastShardsSent: analytics.lastShardsSent,
+    lastViewerId: analytics.lastViewerId,
+    notes: [
+      "This endpoint shows the latest measured state payload summary only.",
+      "Use /admin/bandwidth for rolling averages and Render cost estimates."
+    ]
+  };
+}
+
 function logBandwidthEstimate() {
   const snapshot = createBandwidthSnapshot();
   const averagePayloadKB = roundMetric(snapshot.averageStatePayloadBytes / BYTES_PER_KB, 1);
 
   console.log("Bandwidth estimate:");
+  console.log(`Average payload bytes: ${snapshot.averagePayloadBytes}`);
   console.log(`Average state payload: ${averagePayloadKB} KB`);
-  console.log(`Broadcast rate: ${snapshot.broadcastRate} per second`);
-  console.log(`Connected sockets: ${snapshot.connectedSockets}`);
-  console.log(`Estimated current usage: ${snapshot.estimatedGBPerHourCurrent} GB per hour`);
-  console.log(`Estimated 5 GB life at current load: ${snapshot.estimatedHoursFor5GBCurrent} hours`);
+  console.log(`Average full players sent: ${snapshot.averageFullPlayersSent}`);
+  console.log(`Average threat players sent: ${snapshot.averageThreatPlayersSent}`);
+  console.log(`Average shards sent: ${snapshot.averageShardsSent}`);
+  console.log(`Estimated 5 GB life at 1 player: ${snapshot.estimates.onePlayer.hoursFor5GB} hours`);
+  console.log(`Estimated 5 GB life at 5 players: ${snapshot.estimates.fivePlayers.hoursFor5GB} hours`);
+  console.log(`Estimated 5 GB life at 10 players: ${snapshot.estimates.tenPlayers.hoursFor5GB} hours`);
+  console.log(`Estimated 5 GB life at 25 players: ${snapshot.estimates.twentyFivePlayers.hoursFor5GB} hours`);
+}
+
+function buildLeaderboardPayload(playersSnapshot = [...players.values()]) {
+  return playersSnapshot
+    .filter((player) => player.alive)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10)
+    .map((player, index) => ({
+      rank: index + 1,
+      id: player.id,
+      name: player.name,
+      score: Math.floor(player.score),
+      drones: player.drones,
+      maxDrones: player.maxDrones,
+      bountyRank: player.bountyRank
+    }));
+}
+
+function emitMeasuredPayload(socket, eventName, payload) {
+  const payloadBytes = Buffer.byteLength(JSON.stringify(payload));
+  if (eventName === "leaderboard") analytics.lastLeaderboardBytes = payloadBytes;
+  if (eventName === "storm") analytics.lastStormBytes = payloadBytes;
+  recordEstimatedPayloadBytes(payloadBytes);
+  markStatsDirty();
+  socket.emit(eventName, payload);
+}
+
+function emitMeasuredSharedPayload(eventName, payload) {
+  const connectedSockets = getConnectedSocketCount();
+  if (!connectedSockets) return;
+
+  const payloadBytes = Buffer.byteLength(JSON.stringify(payload));
+  if (eventName === "leaderboard") analytics.lastLeaderboardBytes = payloadBytes;
+  if (eventName === "storm") analytics.lastStormBytes = payloadBytes;
+  recordEstimatedPayloadBytes(payloadBytes, connectedSockets);
+  markStatsDirty();
+  io.emit(eventName, payload);
+}
+
+function broadcastLeaderboard(playersSnapshot = [...players.values()]) {
+  emitMeasuredSharedPayload("leaderboard", buildLeaderboardPayload(playersSnapshot));
+}
+
+function broadcastStorm(nowSeconds) {
+  emitMeasuredSharedPayload("storm", stormState(nowSeconds));
 }
 
 function getStatsAccessError(req) {
@@ -1381,6 +1534,19 @@ app.get("/admin/bandwidth", (req, res) => {
   return res.json(createBandwidthSnapshot());
 });
 
+app.get("/admin/debug-payload", (req, res) => {
+  const authError = getStatsAccessError(req);
+  if (authError) {
+    return res.status(403).json({
+      ok: false,
+      code: authError.code,
+      message: authError.message
+    });
+  }
+
+  return res.json(createDebugPayloadSnapshot());
+});
+
 app.get("/admin/dashboard", (req, res) => {
   const authError = getStatsAccessError(req);
   if (authError) {
@@ -2278,6 +2444,74 @@ function tick() {
     assignBounties();
     broadcastState(nowSeconds);
   }
+  if (tickCount % TICK_RATE === 0) {
+    broadcastStorm(nowSeconds);
+  }
+  if (tickCount % (TICK_RATE * 2) === 0) {
+    broadcastLeaderboard();
+  }
+}
+
+function isHeavyScene(playersSnapshot) {
+  const alivePlayers = playersSnapshot.filter((player) => player.alive);
+  const aliveCount = alivePlayers.length;
+  const totalDrones = alivePlayers.reduce((sum, player) => sum + Math.max(0, player.drones || 0), 0);
+  const bigSwarmCount = alivePlayers.filter((player) => (player.drones || 0) >= 500).length;
+
+  return aliveCount >= 20 || totalDrones >= 7000 || bigSwarmCount >= 5;
+}
+
+function getPlayerOuterWorldRadius(player) {
+  return player && player.drones > 1
+    ? droneDistance(player, player.drones - 1) + 240
+    : 280;
+}
+
+function canPlayerThreatenViewer(player, viewer) {
+  if (!player || !viewer || !player.alive || !viewer.alive) return false;
+  if (player.id === viewer.id) return true;
+
+  const dx = player.x - viewer.x;
+  const dy = player.y - viewer.y;
+  const distance = Math.hypot(dx, dy);
+
+  const playerRadius = getPlayerOuterWorldRadius(player);
+  const viewerRadius = getPlayerOuterWorldRadius(viewer);
+
+  return distance <= playerRadius + viewerRadius + THREAT_MARGIN;
+}
+
+function shouldSendFullPlayerToViewer(player, viewer, heavyScene) {
+  if (!player || !viewer || !player.alive) return false;
+  if (player.id === viewer.id) return true;
+
+  const dx = player.x - viewer.x;
+  const dy = player.y - viewer.y;
+  const distance = Math.hypot(dx, dy);
+
+  const fullRadius = heavyScene ? FULL_PLAYER_VIEW_RADIUS_HEAVY : FULL_PLAYER_VIEW_RADIUS;
+
+  return distance <= fullRadius;
+}
+
+function shouldSendThreatPlayerToViewer(player, viewer) {
+  if (!player || !viewer || !player.alive) return false;
+  if (player.id === viewer.id) return false;
+
+  return canPlayerThreatenViewer(player, viewer);
+}
+
+function compareViewerCandidates(a, b) {
+  if (a.player.bountyRank && !b.player.bountyRank) return -1;
+  if (!a.player.bountyRank && b.player.bountyRank) return 1;
+  return a.distance - b.distance;
+}
+
+function compareThreatCandidates(a, b) {
+  if (a.player.bountyRank && !b.player.bountyRank) return -1;
+  if (!a.player.bountyRank && b.player.bountyRank) return 1;
+  if (a.distance !== b.distance) return a.distance - b.distance;
+  return (b.player.drones || 0) - (a.player.drones || 0);
 }
 
 function serializePlayerForClient(player) {
@@ -2309,6 +2543,7 @@ function serializePlayerForClient(player) {
     exposed: player.exposedUntil > now,
     needleReady: player.drones < NEEDLE_DASH_MAX_DRONES && now >= player.needleCooldownUntil,
     needleCooldown: Math.max(0, player.needleCooldownUntil - now),
+    threatOnly: false,
     weakSpots: tier === "normal" ? [] : weakSpotPositions(player, now).map((spot) => ({
       id: spot.id,
       x: Math.round(spot.x),
@@ -2320,64 +2555,161 @@ function serializePlayerForClient(player) {
   };
 }
 
+function serializeThreatPlayerForClient(player) {
+  return {
+    id: player.id,
+    name: player.name,
+    x: Math.round(player.x),
+    y: Math.round(player.y),
+    angle: Number((player.angle || 0).toFixed(3)),
+    orbit: Number((player.orbit || 0).toFixed(3)),
+    color: player.color,
+    palette: player.palette || SKINS.cyan.palette,
+    alive: player.alive,
+    drones: player.drones,
+    maxDrones: player.maxDrones,
+    level: levelFor(player.drones),
+    style: player.style,
+    bountyRank: player.bountyRank || 0,
+    titanTier: titanTier(player),
+    threatOnly: true
+  };
+}
+
+function buildViewerPlayerPayload(viewer, playersSnapshot, heavyScene) {
+  if (!viewer) {
+    return {
+      players: [],
+      fullPlayersSent: 0,
+      threatPlayersSent: 0
+    };
+  }
+
+  if (!viewer.alive) {
+    return {
+      players: [serializePlayerForClient(viewer)],
+      fullPlayersSent: 1,
+      threatPlayersSent: 0
+    };
+  }
+
+  const fullCandidates = [];
+  const threatCandidates = [];
+
+  for (const player of playersSnapshot) {
+    if (!player.alive || player.id === viewer.id) continue;
+
+    const distance = Math.hypot(player.x - viewer.x, player.y - viewer.y);
+    if (shouldSendFullPlayerToViewer(player, viewer, heavyScene)) {
+      fullCandidates.push({ player, distance });
+      continue;
+    }
+    if (shouldSendThreatPlayerToViewer(player, viewer)) {
+      threatCandidates.push({ player, distance });
+    }
+  }
+
+  fullCandidates.sort(compareViewerCandidates);
+  threatCandidates.sort(compareThreatCandidates);
+
+  const fullPlayers = [serializePlayerForClient(viewer)];
+  const selectedFullIds = new Set([viewer.id]);
+
+  for (const entry of fullCandidates) {
+    if (fullPlayers.length >= MAX_FULL_PLAYERS_PER_CLIENT) break;
+    fullPlayers.push(serializePlayerForClient(entry.player));
+    selectedFullIds.add(entry.player.id);
+  }
+
+  const threatPlayers = [];
+  for (const entry of threatCandidates) {
+    if (selectedFullIds.has(entry.player.id)) continue;
+    threatPlayers.push(serializeThreatPlayerForClient(entry.player));
+    if (threatPlayers.length >= MAX_THREAT_PLAYERS_PER_CLIENT) break;
+  }
+
+  return {
+    players: [...fullPlayers, ...threatPlayers],
+    fullPlayersSent: fullPlayers.length,
+    threatPlayersSent: threatPlayers.length
+  };
+}
+
+function buildShardPayloadForViewer(viewer) {
+  if (!viewer || !viewer.alive) return [];
+
+  const shardCandidates = [];
+  for (const shard of shards.values()) {
+    const dx = shard.x - viewer.x;
+    const dy = shard.y - viewer.y;
+    if (dx * dx + dy * dy > SHARD_VIEW_RADIUS * SHARD_VIEW_RADIUS && !shard.rare) continue;
+    const distance = Math.hypot(dx, dy);
+    const prefersDroneLoot = shard.kind === "drone" && distance <= 1200;
+    const prefersRare = shard.rare && distance <= 1800;
+    const effectiveDistance = distance - (prefersDroneLoot ? 260 : 0) - (prefersRare ? 180 : 0);
+
+    shardCandidates.push({
+      shard,
+      distance,
+      effectiveDistance,
+      prefersDroneLoot,
+      prefersRare
+    });
+  }
+
+  shardCandidates.sort((a, b) => {
+    if (a.effectiveDistance !== b.effectiveDistance) return a.effectiveDistance - b.effectiveDistance;
+    if (a.prefersDroneLoot !== b.prefersDroneLoot) return a.prefersDroneLoot ? -1 : 1;
+    if (a.prefersRare !== b.prefersRare) return a.prefersRare ? -1 : 1;
+    return a.distance - b.distance;
+  });
+
+  return shardCandidates.slice(0, MAX_SHARDS_PER_CLIENT).map(({ shard }) => ({
+    x: Math.round(shard.x),
+    y: Math.round(shard.y),
+    value: shard.value,
+    rare: shard.rare,
+    kind: shard.kind
+  }));
+}
+
 function broadcastState(nowSeconds) {
   const playersSnapshot = [...players.values()];
-  const playerPayload = playersSnapshot.map(serializePlayerForClient);
-  const leaderboard = playersSnapshot
-    .filter((player) => player.alive)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 10)
-    .map((player, index) => ({
-      rank: index + 1,
-      id: player.id,
-      name: player.name,
-      score: Math.floor(player.score),
-      drones: player.drones,
-      maxDrones: player.maxDrones,
-      bountyRank: player.bountyRank
-    }));
+  const heavyScene = isHeavyScene(playersSnapshot);
 
   const basePayload = {
     worldRadius: Math.round(worldRadius),
-    players: playerPayload,
-    leaderboard,
-    storm: stormState(nowSeconds)
+    players: []
   };
 
-  const connectedSockets = getConnectedSocketCount();
-  let broadcastBytes = 0;
+  let emittedPayloads = 0;
 
   for (const socket of io.sockets.sockets.values()) {
     const viewer = players.get(socket.id);
-    const center = viewer && viewer.alive ? viewer : { x: 0, y: 0 };
-    const shardPayload = [];
-    for (const s of shards.values()) {
-      const dx = s.x - center.x;
-      const dy = s.y - center.y;
-      if (dx * dx + dy * dy > SHARD_VIEW_RADIUS * SHARD_VIEW_RADIUS && !s.rare) continue;
-      shardPayload.push({
-        x: Math.round(s.x),
-        y: Math.round(s.y),
-        value: s.value,
-        rare: s.rare,
-        kind: s.kind
-      });
-      if (shardPayload.length >= MAX_SHARDS_PER_CLIENT) break;
-    }
-    const payload = { ...basePayload, shards: shardPayload };
+    const playerSelection = buildViewerPlayerPayload(viewer, playersSnapshot, heavyScene);
+    const shardPayload = buildShardPayloadForViewer(viewer);
+    const payload = {
+      ...basePayload,
+      players: playerSelection.players,
+      shards: shardPayload
+    };
     const payloadJson = JSON.stringify(payload);
     const payloadBytes = Buffer.byteLength(payloadJson);
-    const estimatedBytes = payloadBytes * SOCKET_OVERHEAD_MULTIPLIER;
 
-    recordStatePayloadSample(payloadBytes);
-    broadcastBytes += estimatedBytes;
+    recordStatePayloadSample(payloadBytes, {
+      playersSent: playerSelection.players.length,
+      fullPlayersSent: playerSelection.fullPlayersSent,
+      threatPlayersSent: playerSelection.threatPlayersSent,
+      shardsSent: shardPayload.length,
+      viewerId: viewer ? viewer.id : null
+    });
+    recordEstimatedPayloadBytes(payloadBytes, 1, true);
+    analytics.totalStateBroadcasts += 1;
+    emittedPayloads += 1;
     socket.volatile.emit("state", payload);
   }
 
-  if (connectedSockets > 0) {
-    analytics.totalStateBroadcasts += 1;
-    analytics.totalEstimatedStateBytesSent += broadcastBytes;
-    analytics.totalEstimatedBytesSent += broadcastBytes;
+  if (emittedPayloads > 0) {
     refreshBandwidthEstimates();
     markStatsDirty();
   }
@@ -2409,6 +2741,8 @@ io.on("connection", (socket) => {
     asteroids,
     serverStartedAt: startTime
   });
+  emitMeasuredPayload(socket, "leaderboard", buildLeaderboardPayload());
+  emitMeasuredPayload(socket, "storm", stormState((Date.now() - startTime) / 1000));
 
   socket.on("hello", (payload = {}) => {
     const existing = players.get(socket.id);
